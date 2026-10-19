@@ -54,6 +54,12 @@ public class ContractController {
                 .orElseThrow(() -> new ContractNotFoundException(id));
         ContractStatus from = ContractRules.parseStatus(current.status());
         ContractStatus target = ContractRules.parseStatus(request.status());
+        if (target == ContractStatus.BOUND) {
+            throw new ContractConflictException("BIND_REQUIRES_COMMAND",
+                    "Bind is a command: POST /internal/v1/contracts/" + id + "/bind enforces the "
+                            + "tower, share, term, security and approval preconditions",
+                    "status", "PLACED -> BOUND is only available through the bind command");
+        }
         ContractRules.validateTransition(from, target);
         return repository.updateStatus(tenantId, id, target, request.expectedVersion());
     }

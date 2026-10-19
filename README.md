@@ -13,6 +13,28 @@
 
 Contract persistence, invariants, read models, batch jobs, Quartz schedules, and outbox/inbox. Reinsurance contract administration, layers, participations, accounts, and bordereaux.
 
+## Implemented slice
+
+The expert persists the contract header and its children — layers, participants,
+terms, security, cessions, bordereaux, and commutations — under
+`/internal/v1/contracts`:
+
+- `GET/POST /{id}/layers`, `GET /{id}/layers/summary`
+- `GET/POST /{id}/participants`
+- `GET/POST /{id}/terms`, `GET /{id}/terms/requirements`
+- `GET/POST /{id}/security`
+- `GET/POST /{id}/cessions`
+- `GET/POST /{id}/bordereaux`, `GET /{id}/bordereaux/{bordereauId}`
+- `GET/POST /{id}/commutations`, `POST /{id}/commutations/{commutationId}/approve`,
+  `POST /{id}/commutations/{commutationId}/execute`
+- `GET /{id}/bind-eligibility`, `POST /{id}/bind`
+
+Bind is a guarded command with an approver; `PATCH /{id}/status` no longer accepts
+`BOUND`. Layer overlaps, share totals, required terms, over-collateralisation,
+cession capacity, security breach, and commutation approval are enforced here.
+`IMPLEMENTATION.md` records the invariants, schema decisions, and remaining SPEC
+gaps.
+
 ## Responsibilities
 
 - Keep this repository focused on one deployable component or one platform concern.

@@ -1,5 +1,7 @@
 package com.eia.contract.expert;
 
+import com.eia.contract.expert.bind.BindCheck;
+import com.eia.contract.expert.bind.BindPreconditionFailedException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -22,6 +24,12 @@ public class ApiExceptionHandler {
                 .body(new ApiError("NOT_FOUND", ex.getMessage()));
     }
 
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiError> childNotFound(ResourceNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiError("NOT_FOUND", ex.getMessage()));
+    }
+
     @ExceptionHandler(DuplicateContractNumberException.class)
     public ResponseEntity<ApiError> duplicate(DuplicateContractNumberException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
@@ -40,6 +48,31 @@ public class ApiExceptionHandler {
     public ResponseEntity<ApiError> concurrent(ConcurrentContractUpdateException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
                 .body(new ApiError("CONCURRENT_MODIFICATION", ex.getMessage()));
+    }
+
+    /** A failed bind lists every check that did not pass, so the caller can act on it. */
+    @ExceptionHandler(BindPreconditionFailedException.class)
+    public ResponseEntity<ApiError> bindFailed(BindPreconditionFailedException ex) {
+        List<ApiError.FieldViolation> details = ex.failed().stream()
+                .map(BindCheck::code)
+                .map(code -> new ApiError.FieldViolation(code, detailOf(ex, code)))
+                .toList();
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError(ex.code(), ex.getMessage(), details));
+    }
+
+    private static String detailOf(BindPreconditionFailedException ex, String code) {
+        return ex.failed().stream()
+                .filter(check -> check.code().equals(code))
+                .map(BindCheck::detail)
+                .findFirst()
+                .orElse(code);
+    }
+
+    @ExceptionHandler(ContractConflictException.class)
+    public ResponseEntity<ApiError> conflict(ContractConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiError.of(ex.code(), ex.getMessage(), ex.field(), ex.detail()));
     }
 
     @ExceptionHandler(ContractValidationException.class)
@@ -72,6 +105,6 @@ public class ApiExceptionHandler {
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiError> integrity(DataIntegrityViolationException ex) {
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(new ApiError("DATA_CONFLICT", "The contract violates a database constraint"));
+                .body(new ApiError("DATA_CONFLICT", "The request violates a database constraint"));
     }
 }

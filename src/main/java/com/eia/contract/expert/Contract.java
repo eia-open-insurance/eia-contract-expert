@@ -7,9 +7,10 @@ import java.util.UUID;
 /**
  * Assumed-reinsurance contract aggregate root.
  *
- * <p>Mirrors the core columns of the SPEC contract aggregate (SPEC §11.3.4) for the
- * first vertical slice. Dates are stored as {@code effective_date} /
- * {@code expiration_date}; the specification calls the start date the inception date.</p>
+ * <p>Mirrors the core columns of the SPEC contract aggregate (SPEC §11.3.4). Dates
+ * are stored as {@code effective_date} / {@code expiration_date}; the
+ * specification calls the start date the inception date. The bind and commutation
+ * timestamps were added by the second slice so the lifecycle evidence is durable.</p>
  */
 public record Contract(
         UUID id,
@@ -24,5 +25,9 @@ public record Contract(
         String currency,
         int version,
         Instant createdAt,
-        Instant updatedAt
+        Instant updatedAt,
+        Instant boundAt,
+        UUID boundBy,
+        Instant commutedAt,
+        Instant closedAt
 ) {}
