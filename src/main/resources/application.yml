@@ -1,0 +1,17 @@
+server:
+  port: 8085
+spring:
+  application:
+    name: eia-contract-expert
+  datasource:
+    url: jdbc:postgresql://localhost:5432/eia_contract
+    username: postgres
+    password: postgres
+  sql:
+    init:
+      mode: always
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
