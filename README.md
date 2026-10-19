@@ -11,7 +11,7 @@
 
 ## Purpose
 
-Contract persistence, invariants, read models, batch jobs, Quartz schedules, and outbox/inbox. Assumed reinsurance contract administration, layers, participations, accounts, and bordereaux.
+Contract persistence, invariants, read models, batch jobs, Quartz schedules, and outbox/inbox. Reinsurance contract administration, layers, participations, accounts, and bordereaux.
 
 ## Responsibilities
 
