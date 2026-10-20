@@ -346,6 +346,40 @@ CREATE INDEX IF NOT EXISTS ix_contract_commutation_contract
 CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_commutation_executed
     ON contract_commutation (tenant_id, contract_id) WHERE status = 'EXECUTED';
 
+-- SPEC 11.3.4 `technical_account`: the periodic account for one contract
+-- period. The brief's table and column names are kept; SPEC's separate
+-- `technical_account_line` breakdown is not part of this slice. `balance` is
+-- derived at creation time as ceded_premium - commission - ceded_losses
+-- + other_charges, so a positive value is due from the cedent to the reinsurer.
+CREATE TABLE IF NOT EXISTS contract_technical_account (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    contract_id UUID NOT NULL,
+    account_number VARCHAR(32) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    currency CHAR(3) NOT NULL,
+    ceded_premium NUMERIC(19,4) NOT NULL,
+    ceded_losses NUMERIC(19,4) NOT NULL,
+    commission NUMERIC(19,4) NOT NULL,
+    other_charges NUMERIC(19,4) NOT NULL,
+    balance NUMERIC(19,4) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT uq_contract_technical_account_period
+        UNIQUE (tenant_id, contract_id, period_start, period_end),
+    CONSTRAINT ck_contract_technical_account_period CHECK (period_start < period_end),
+    CONSTRAINT ck_contract_technical_account_amounts CHECK (
+        ceded_premium >= 0 AND ceded_losses >= 0 AND commission >= 0 AND other_charges >= 0),
+    CONSTRAINT ck_contract_technical_account_currency CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT ck_contract_technical_account_status CHECK (status IN ('DRAFT', 'ISSUED', 'SETTLED')),
+    CONSTRAINT fk_contract_technical_account_contract FOREIGN KEY (contract_id)
+        REFERENCES contract (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
+    ON contract_technical_account (tenant_id, contract_id, period_start);
+
 -- Transactional outbox (SPEC 7.5.1). The canonical copy lives in
 -- eia-platform/libs/src/main/resources/db/outbox_event.sql; keep both in sync.
 -- The expert appends the event in the same transaction as the aggregate write,

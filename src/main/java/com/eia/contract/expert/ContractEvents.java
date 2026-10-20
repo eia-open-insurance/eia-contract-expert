@@ -2,6 +2,8 @@ package com.eia.contract.expert;
 
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
+import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
+import com.eia.contract.expert.technicalaccount.TechnicalAccountStatus;
 import com.eia.platform.libs.events.Book;
 import com.eia.platform.libs.events.EventActor;
 import com.eia.platform.libs.events.EventEnvelope;
@@ -28,6 +30,8 @@ import java.util.UUID;
  * requested generic fact and, when the target status has a catalog lifecycle
  * event, that canonical event as well. {@code contract.contract.cession-added}
  * from the task brief maps to the catalog name {@code contract.cession.recorded}.
+ * Technical accounts publish the brief's {@code contract.technical-account.*}
+ * child-aggregate facts; the catalog only names {@code contract.account.issued}.
  * The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
  *
  * <p>Contract is an ASSUMED-book-only vertical, so every envelope carries
@@ -47,11 +51,15 @@ public final class ContractEvents {
     static final String CANCELLED = "contract.contract.cancelled";
     static final String COMMUTED = "contract.contract.commuted";
     static final String CESSION_RECORDED = "contract.cession.recorded";
+    static final String TECHNICAL_ACCOUNT_CREATED = "contract.technical-account.created";
+    static final String TECHNICAL_ACCOUNT_ISSUED = "contract.technical-account.issued";
+    static final String TECHNICAL_ACCOUNT_SETTLED = "contract.technical-account.settled";
 
     private static final Book EVENT_BOOK = Book.ASSUMED;
     private static final String VERTICAL = "contract";
     private static final String CONTRACT_AGGREGATE = "Contract";
     private static final String CESSION_AGGREGATE = "Cession";
+    private static final String TECHNICAL_ACCOUNT_AGGREGATE = "TechnicalAccount";
     private static final String SOURCE_BUILD = "eia-contract-expert@0.1.0-SNAPSHOT";
 
     private ContractEvents() {
@@ -173,6 +181,64 @@ public final class ContractEvents {
                 .sequence(0)
                 .actor(EventActor.system("eia-contract-expert"))
                 .subject(EventSubject.of(VERTICAL, "cession", cession.id(), cession.cessionNumber()))
+                .links(List.of())
+                .data(data)
+                .metadata(EventMetadata.v1(SOURCE_BUILD))
+                .build();
+    }
+
+    /**
+     * A technical account is a child aggregate: its own id and lifecycle version,
+     * while the contract id stays the outbox partition key. The balance is a
+     * decimal string with the sign convention documented on the account record.
+     */
+    public static EventEnvelope technicalAccountCreated(
+            Contract contract, ContractTechnicalAccount account, Instant now) {
+        return technicalAccountEnvelope(contract, account, TECHNICAL_ACCOUNT_CREATED, now);
+    }
+
+    public static EventEnvelope technicalAccountIssued(
+            Contract contract, ContractTechnicalAccount account, Instant now) {
+        return technicalAccountEnvelope(contract, account, TECHNICAL_ACCOUNT_ISSUED, now);
+    }
+
+    public static EventEnvelope technicalAccountSettled(
+            Contract contract, ContractTechnicalAccount account, Instant now) {
+        return technicalAccountEnvelope(contract, account, TECHNICAL_ACCOUNT_SETTLED, now);
+    }
+
+    private static EventEnvelope technicalAccountEnvelope(
+            Contract contract, ContractTechnicalAccount account, String eventType, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("contractNumber", contract.contractNumber());
+        data.put("accountId", account.id());
+        data.put("accountNumber", account.accountNumber());
+        data.put("periodStart", date(account.periodStart()));
+        data.put("periodEnd", date(account.periodEnd()));
+        data.put("currency", account.currency());
+        data.put("balance", money(account.balance()));
+        data.put("status", account.status());
+
+        long aggregateVersion = TechnicalAccountStatus.valueOf(account.status()).eventVersion();
+        UUID eventId = EventIds.deterministic(contract.tenantId(), TECHNICAL_ACCOUNT_AGGREGATE,
+                account.id(), aggregateVersion, eventType);
+        return EventEnvelope.builder()
+                .eventId(eventId)
+                .eventType(eventType)
+                .eventVersion(1)
+                .occurredAt(now)
+                .recordedAt(now)
+                .tenantId(contract.tenantId())
+                .book(EVENT_BOOK)
+                .vertical(VERTICAL)
+                .aggregateType(TECHNICAL_ACCOUNT_AGGREGATE)
+                .aggregateId(account.id())
+                .aggregateVersion(aggregateVersion)
+                .sequence(0)
+                .actor(EventActor.system("eia-contract-expert"))
+                .subject(EventSubject.of(VERTICAL, "technical-account", account.id(),
+                        account.accountNumber()))
                 .links(List.of())
                 .data(data)
                 .metadata(EventMetadata.v1(SOURCE_BUILD))

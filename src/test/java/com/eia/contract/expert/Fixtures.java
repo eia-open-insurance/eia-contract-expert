@@ -6,6 +6,7 @@ import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.layer.ContractLayer;
 import com.eia.contract.expert.participant.ContractParticipant;
 import com.eia.contract.expert.security.ContractSecurity;
+import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
 import com.eia.contract.expert.term.ContractTerm;
 
 import java.math.BigDecimal;
@@ -23,6 +24,7 @@ public final class Fixtures {
     public static final UUID LAYER_ID = UUID.fromString("55555555-5555-7555-8555-555555555555");
     public static final UUID APPROVER = UUID.fromString("66666666-6666-7666-8666-666666666666");
     public static final UUID DOCUMENT = UUID.fromString("77777777-7777-7777-8777-777777777777");
+    public static final UUID ACCOUNT_ID = UUID.fromString("88888888-8888-7888-8888-888888888888");
     public static final Instant NOW = Instant.parse("2026-01-15T10:00:00Z");
     public static final LocalDate FROM = LocalDate.of(2026, 1, 1);
     public static final LocalDate TO = LocalDate.of(2026, 12, 31);
@@ -87,6 +89,14 @@ public final class Fixtures {
         return ContractBordereau.create(TENANT, CONTRACT_ID, "BRD-2026-00001", "CLAIMS", FROM,
                 LocalDate.of(2026, 3, 31), NOW, null, "CSV", "cedent-file-1", "RECEIVED",
                 10, 9, 1, new BigDecimal("240000"), "USD", null, null);
+    }
+
+    public static ContractTechnicalAccount technicalAccount(String status) {
+        return new ContractTechnicalAccount(ACCOUNT_ID, TENANT, CONTRACT_ID, "TA-2026-00001",
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 3, 31), "USD",
+                new BigDecimal("1000.0000"), new BigDecimal("400.0000"),
+                new BigDecimal("100.0000"), new BigDecimal("50.0000"),
+                new BigDecimal("550.0000"), status, NOW);
     }
 
     public static ContractCommutation commutation(String status, String type) {

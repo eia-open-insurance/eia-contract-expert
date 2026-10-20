@@ -30,6 +30,17 @@ CREATE TABLE IF NOT EXISTS contract (
     ))
 );
 
+-- Portable business-key counter. `year` is a reserved word in H2 and must be
+-- quoted here; the quoted spelling also resolves to the same lowercase column
+-- in PostgreSQL.
+CREATE TABLE IF NOT EXISTS contract_business_key (
+    tenant_id UUID NOT NULL,
+    prefix VARCHAR(8) NOT NULL,
+    "year" INTEGER NOT NULL,
+    next_value INTEGER NOT NULL,
+    PRIMARY KEY (tenant_id, prefix, "year")
+);
+
 CREATE TABLE IF NOT EXISTS contract_layer (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -223,6 +234,34 @@ CREATE TABLE IF NOT EXISTS contract_commutation (
         'NEGOTIATED', 'CONTRACTUAL', 'INDUCED', 'REGULATORY', 'INSOLVENCY'
     ))
 );
+
+CREATE TABLE IF NOT EXISTS contract_technical_account (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    contract_id UUID NOT NULL,
+    account_number VARCHAR(32) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    currency CHAR(3) NOT NULL,
+    ceded_premium NUMERIC(19,4) NOT NULL,
+    ceded_losses NUMERIC(19,4) NOT NULL,
+    commission NUMERIC(19,4) NOT NULL,
+    other_charges NUMERIC(19,4) NOT NULL,
+    balance NUMERIC(19,4) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT uq_contract_technical_account_period
+        UNIQUE (tenant_id, contract_id, period_start, period_end),
+    CONSTRAINT ck_contract_technical_account_period CHECK (period_start < period_end),
+    CONSTRAINT ck_contract_technical_account_amounts CHECK (
+        ceded_premium >= 0 AND ceded_losses >= 0 AND commission >= 0 AND other_charges >= 0),
+    CONSTRAINT ck_contract_technical_account_status CHECK (status IN ('DRAFT', 'ISSUED', 'SETTLED')),
+    CONSTRAINT fk_contract_technical_account_contract FOREIGN KEY (contract_id)
+        REFERENCES contract (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
+    ON contract_technical_account (tenant_id, contract_id, period_start);
 
 -- H2-compatible copy of the PostgreSQL outbox table. JSON payloads are TEXT
 -- here; production DDL uses jsonb.

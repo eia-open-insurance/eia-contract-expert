@@ -17,6 +17,7 @@ what remains.
 | Cessions | `contract_cession`, `GET/POST .../cessions` | CTR-04 ceded loss within the live tower (contract or named layer); CTR-05 active cessions per source <= 100%; ASSUMED book wall; CTR-17 contract currency; cession inside contract term |
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
+| Technical accounts | `contract_technical_account`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
 | Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
 
@@ -40,14 +41,21 @@ same transaction as the aggregate write:
   (the catalog name for the brief's `contract.contract.cession-added`)
 - `POST /internal/v1/contracts/{id}/commutations/{commutationId}/execute` ->
   `contract.contract.updated` and `contract.contract.commuted`
+- `POST /api/v1/contracts/{contractId}/technical-accounts` (also under
+  `/internal/v1`) -> `contract.technical-account.created`
+- `PATCH .../technical-accounts/{accountId}/status` -> the matching
+  `contract.technical-account.issued` or `.settled` event
 
 Contract events use `aggregateType=Contract`, `vertical=contract`,
 `book=ASSUMED`, and the outbox partition key is the contract id. The cession is
 a child aggregate, so `contract.cession.recorded` uses `aggregateType=Cession`
 and the cession id/version while keeping the contract id as the partition key.
-Rows start at version 0 for API compatibility, so the event
-`aggregateVersion` is the row version plus one. Event ids are deterministic
-(tenant + aggregate + version + type), making a retry idempotent.
+A technical account is also a child aggregate: `aggregateType=TechnicalAccount`,
+its own id, and the lifecycle version 1 (DRAFT), 2 (ISSUED), or 3 (SETTLED),
+still partitioned by the contract id. Rows start at version 0 for API
+compatibility, so contract event `aggregateVersion` is the row version plus one.
+Event ids are deterministic (tenant + aggregate + version + type), making a
+retry idempotent.
 
 Payloads carry `contractId`, `contractNumber`, `contractType`, `status`,
 `version`, `cedentPartyId`, `reinsurerPartyId`, `currency`, `effectiveDate`,
@@ -56,14 +64,20 @@ and `expirationDate`. The bind payload adds `boundAt`, `boundBy`, and
 `cededPremiumAmount`, `cededLossAmount`, `contractLimitAmount`, and the source
 references; the commuted payload adds the commutation identifier, type, basis,
 `agreedAmount`, `savingsAmount`, dates, release document, `contractClosed`, and
-`releasedSecurities`. Money and percentages are decimal strings (SPEC 10.3).
+`releasedSecurities`. Technical-account payloads carry `contractId`,
+`contractNumber`, `accountId`, `accountNumber`, `periodStart`, `periodEnd`,
+`currency`, `balance`, and `status`. Money and percentages are decimal strings
+(SPEC 10.3).
 
 Event names are not all in the canonical catalog. The catalog has no generic
 `contract.contract.updated`, so the expert publishes that requested change fact
 as an additive name (EV-05 treats an added event as compatible) and also
 publishes the specific lifecycle fact. The brief's
 `contract.contract.cession-added` is published under the catalog's actual name,
-`contract.cession.recorded`.
+`contract.cession.recorded`. The technical-account events keep the brief's
+`contract.technical-account.*` names; the catalog's only account event is the
+narrower `contract.account.issued`, so the three names are additive child facts
+rather than replacements for it.
 
 The `outbox_event` DDL is repeated in `schema.sql` using the canonical
 PostgreSQL definition from
@@ -83,12 +97,28 @@ written even when dispatch is disabled, so no event is lost.
   (`CEDING_COMMISSION_PCT`, `BROKERAGE_PCT`, `FUNDS_WITHHELD_PCT`, ...) and links
   each to a SPEC 11.3.5 clause code. The wide `contract_terms`,
   `contract_sliding_scale`, `contract_premium`, `contract_reinstatement`,
-  `contract_wording`, `contract_section`, `technical_account`, and
+  `contract_wording`, `contract_section`, `technical_account_line`, and
   `contract_mass_tort_profile` are still gaps.
 - **Cession business references.** `contract_cession` stores `policy_ref` and
   `claim_ref` strings rather than SPEC `source_id` UUIDs, because Contract is an
   ASSUMED-book-only vertical with a hard wall against Policy and Direct Claims.
   `source_vertical` is constrained to `ASSUMED` in the database.
+- **`contract_technical_account` rather than SPEC `technical_account`.** The
+  brief names the table and a compact set of columns, so the slice implements
+  `account_number`, the period, currency, ceded premium, ceded losses,
+  commission, other charges, and a derived balance without the SPEC
+  `technical_account_line` breakdown. The balance sign convention is
+  `cededPremium - commission - cededLosses + otherCharges`: positive is due from
+  the cedent to the reinsurer. Only the exact `(tenant, contract, period)` key is
+  unique; SPEC CTR-07's fall-within-contract and non-overlap rules, the
+  `AGREED`/`DISPUTED`/`SUPERSEDED` states, and the line reconciliation (CTR-08)
+  remain gaps.
+- **Technical-account API prefix and tenant.** The task brief addresses the
+  resource at `/api/v1/contracts/{contractId}/technical-accounts`; the expert's
+  other child slices are internal, so the controller maps both that path and
+  `/internal/v1/...`. The tenant is read from `X-EIA-Tenant` (public convention)
+  or `tenantId` (internal convention); supplying both with different values is a
+  400. Account numbers use the shared `TA` business key (`TA-2026-00001`).
 - **`share_pct` is points of 100** (SPEC 11.3.4 says "Of 100"), not the decimal
   fraction of SPEC 12.2 `Percent`. The wire value is a decimal string with six
   decimals.
@@ -109,15 +139,21 @@ written even when dispatch is disabled, so no event is lost.
   `ParticipantControllerTest`, `ParticipantRulesTest`, `TermControllerTest`,
   `RequiredTermsTest`, `SecurityControllerTest`, `CessionControllerTest`,
   `BordereauControllerTest`, `CommutationControllerTest`, `BindControllerTest`,
-  `ContractStatusTest`, `OutboxSchedulingEnabledTest`,
-  `OutboxSchedulingDisabledTest`, `ContractOutboxFailureRollbackTest`, and
-  `ContractOutboxIntegrationTest` — 135 tests, run with `./gradlew test`.
+  `TechnicalAccountControllerTest`, `ContractStatusTest`,
+  `OutboxSchedulingEnabledTest`, `OutboxSchedulingDisabledTest`,
+  `ContractOutboxFailureRollbackTest`, `ContractOutboxIntegrationTest`, and
+  `TechnicalAccountOutboxIntegrationTest` — 162 tests, run with
+  `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
   the rollback rule for every write (neither the row nor the event survives).
-  `ContractOutboxFailureRollbackTest` proves that an outbox append failure rolls
-  the contract INSERT back. `OutboxSchedulingEnabledTest`/`DisabledTest` prove
-  the Quartz job is created only when `eia.outbox.enabled=true`.
+  `TechnicalAccountOutboxIntegrationTest` proves creation, newest-period-first
+  listing, period uniqueness, DRAFT -> ISSUED -> SETTLED with the matching
+  events, invalid transitions, the tenant/contract wall, and row/event/key
+  rollback. `ContractOutboxFailureRollbackTest` proves that an outbox append
+  failure rolls the contract INSERT back.
+  `OutboxSchedulingEnabledTest`/`DisabledTest` prove the Quartz job is created
+  only when `eia.outbox.enabled=true`.
 - Live PostgreSQL evidence: `../eia-contract-domain/scripts/live-smoke.ps1`
   creates a contract, records two layers and three participations, proves the
   overlap and 100% rejections, binds, records a cession, proves the capacity
@@ -127,10 +163,14 @@ written even when dispatch is disabled, so no event is lost.
 
 - `contract_section`, `contract_version`, `contract_sliding_scale`,
   `contract_premium`, `contract_reinstatement`, `contract_wording`,
-  `technical_account`/`technical_account_line`, `bordereau_line`/`bordereau_exception`,
+  `technical_account_line`, `bordereau_line`/`bordereau_exception`,
   `contract_mass_tort_profile`, and the `contract_loss_aggregate` projection.
-- Commands: endorse, renew, technical-account production, bordereau parsing and
-  posting, reinstatement application, cash calls, loss-aggregate projection.
+- Technical accounts: line-level breakdown and reconciliation (CTR-08),
+  period-within-contract and non-overlap checks (CTR-07), the
+  `AGREED`/`DISPUTED`/`SUPERSEDED` states, approval/authority, and payment
+  settlement (`TECHNICAL_ACCOUNT_SETTLEMENT`).
+- Commands: endorse, renew, bordereau parsing and posting, reinstatement
+  application, cash calls, loss-aggregate projection.
 - Outbox delivery has no subscriber, inbox, subscription registry, or gap
   detection (SPEC 7.5.2-7.5.3); the dispatcher and Quartz schedule exist but no
   event is consumed by another vertical.
