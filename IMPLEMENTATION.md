@@ -13,7 +13,7 @@ what remains.
 | Layers | `contract_layer`, `GET/POST /internal/v1/contracts/{id}/layers`, `GET .../layers/summary` | CTR-02 tower has no overlap; CTR-03 aggregate limit >= layer limit; layer dates inside the contract term; layer currency equals contract currency; `note` records an intentional gap |
 | Participants | `contract_participant`, `GET/POST .../participants` | CTR-01 shares total 100% (+/-0.0001) before bind; a share may not push a layer above 100%; signed line <= share; LEAD requires `leadFlag` |
 | Terms | `contract_term`, `GET/POST .../terms`, `GET .../terms/requirements` | required terms by contract type before bind; value type derived from the code; clause code from SPEC 11.3.5 |
-| Security | `contract_security`, `GET/POST .../security` | collateral above the secured obligation requires an approval reference and timestamp; expiry not before effective; CTR-11 breach blocks cessions |
+| Security | `contract_security`, `GET/POST /api/v1/contracts/{id}/security` (public) and `GET/POST .../security` (internal) | security type, strictly positive required amount, non-negative held amount, three-letter contract currency; status derived as ACTIVE or EXPIRED (past expiry); approval reference <= 64 characters; collateral above the secured obligation requires an approval reference and timestamp on the internal slice; CTR-11 breach blocks cessions |
 | Cessions | `contract_cession`, `GET/POST .../cessions` | CTR-04 ceded loss within the live tower (contract or named layer); CTR-05 active cessions per source <= 100%; ASSUMED book wall; CTR-17 contract currency; cession inside contract term |
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
@@ -55,6 +55,9 @@ same transaction as the aggregate write:
   `/internal/v1`) -> `contract.cash-call.requested`
 - `PATCH .../cash-calls/{cashCallId}/status` -> the matching
   `contract.cash-call.issued`, `.settled`, or `.cancelled` event
+- `POST /api/v1/contracts/{contractId}/security` (and the internal
+  `/internal/v1/contracts/{id}/security` endpoint) ->
+  `contract.security.recorded`
 
 Contract events use `aggregateType=Contract`, `vertical=contract`,
 `book=ASSUMED`, and the outbox partition key is the contract id. The cession is
@@ -65,6 +68,8 @@ its own id, and the lifecycle version 1 (DRAFT), 2 (ISSUED), or 3 (SETTLED),
 still partitioned by the contract id. A cash call is a child aggregate too:
 `aggregateType=CashCall`, its own id, and the lifecycle version 1 (REQUESTED),
 2 (ISSUED or CANCELLED), or 3 (SETTLED), still partitioned by the contract id.
+A security record is a child aggregate with `aggregateType=Security`, its own id,
+version 1, and the contract id as the partition key.
 Rows start at version 0 for API compatibility, so contract event
 `aggregateVersion` is the row version plus one.
 Event ids are deterministic (tenant + aggregate + version + type), making a
@@ -85,8 +90,9 @@ references; the commuted payload adds the commutation identifier, type, basis,
 declared amounts, `lineCount`, and — once linked — `technicalAccountId`. Cash-call
 payloads carry `contractId`, `contractNumber`, `cashCallId`, `callNumber`,
 `period` (a `start`/`end` object), `periodStart`, `periodEnd`, `amount`,
-`currency`, `dueDate`, and `status`. Money and percentages are decimal strings
-(SPEC 10.3).
+`currency`, `dueDate`, and `status`. Security payloads carry `contractId`,
+`securityId`, `securityType`, `requiredAmount`, `heldAmount`, `currency`, and
+`status`. Money and percentages are decimal strings (SPEC 10.3).
 
 Event names are not all in the canonical catalog. The catalog has no generic
 `contract.contract.updated`, so the expert publishes that requested change fact
@@ -101,7 +107,9 @@ rather than replacements for it. The period-bordereau events keep the brief's
 last two facts `.posted` and `.rejected`, so the brief's names are additive. Cash
 calls keep the brief's `contract.cash-call.requested`/`.issued`/`.settled`/
 `.cancelled` child facts; the catalog has no cash-call event, so the four names
-are additive. The legacy ingest header publishes no event.
+are additive. The collateral event keeps the brief's
+`contract.security.recorded` name; the catalog has no security event, so it is
+additive. The legacy ingest header publishes no event.
 
 The `outbox_event` DDL is repeated in `schema.sql` using the canonical
 PostgreSQL definition from
@@ -194,15 +202,18 @@ written even when dispatch is disabled, so no event is lost.
 
 - `ContractControllerTest`, `LayerControllerTest`, `LayerRulesTest`,
   `ParticipantControllerTest`, `ParticipantRulesTest`, `TermControllerTest`,
-  `RequiredTermsTest`, `SecurityControllerTest`, `CessionControllerTest`,
+  `RequiredTermsTest`, `SecurityControllerTest`,
+  `ContractSecurityControllerTest`, `CessionControllerTest`,
   `BordereauHeaderControllerTest`, `BordereauControllerTest`,
   `CommutationControllerTest`, `BindControllerTest`,
   `TechnicalAccountControllerTest`, `ContractStatusTest`,
   `CashCallControllerTest`, `OutboxSchedulingEnabledTest`,
   `OutboxSchedulingDisabledTest`, `ContractOutboxFailureRollbackTest`,
   `ContractOutboxIntegrationTest`, `TechnicalAccountOutboxIntegrationTest`,
-  `BordereauOutboxIntegrationTest`, and `CashCallOutboxIntegrationTest` — 223
-  tests, run with `./gradlew test`.
+  `BordereauOutboxIntegrationTest`, `CashCallOutboxIntegrationTest`,
+  `ContractSecurityOutboxIntegrationTest`,
+  `ContractSecurityOutboxFailureRollbackTest` — 242 tests, run with
+  `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
   the rollback rule for every write (neither the row nor the event survives).
@@ -217,6 +228,11 @@ written even when dispatch is disabled, so no event is lost.
   call numbers per contract, REQUESTED -> ISSUED -> SETTLED and
   REQUESTED -> CANCELLED with their events, invalid and terminal transitions, the
   tenant/contract wall, and create/status rollback.
+  `ContractSecurityOutboxIntegrationTest` proves creation with the derived
+  ACTIVE/EXPIRED status, newest-first listing with the public fields, validation,
+  the tenant/contract wall, the `contract.security.recorded` event, and create
+  rollback. `ContractSecurityOutboxFailureRollbackTest` proves that an outbox
+  append failure rolls the security INSERT back.
   `ContractOutboxFailureRollbackTest` proves that an outbox append
   failure rolls the contract INSERT back.
   `OutboxSchedulingEnabledTest`/`DisabledTest` prove the Quartz job is created

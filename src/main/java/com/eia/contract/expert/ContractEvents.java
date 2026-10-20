@@ -6,6 +6,7 @@ import com.eia.contract.expert.cashcall.CashCallStatus;
 import com.eia.contract.expert.cashcall.ContractCashCall;
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
+import com.eia.contract.expert.security.ContractSecurity;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
 import com.eia.contract.expert.technicalaccount.TechnicalAccountStatus;
 import com.eia.platform.libs.events.Book;
@@ -39,7 +40,9 @@ import java.util.UUID;
  * Period bordereaux publish the brief's {@code contract.bordereau.*} facts; the
  * catalog names the last two {@code .posted} and {@code .rejected}. Cash calls
  * publish the brief's {@code contract.cash-call.*} child facts; the catalog has no
- * cash-call event. The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
+ * cash-call event. Security/collateral publishes the brief's
+ * {@code contract.security.recorded} child fact; the catalog has no security
+ * event. The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
  *
  * <p>Contract is an ASSUMED-book-only vertical, so every envelope carries
  * {@code book=ASSUMED}. Contract rows start at version 0 for API compatibility
@@ -68,6 +71,7 @@ public final class ContractEvents {
     static final String CASH_CALL_ISSUED = "contract.cash-call.issued";
     static final String CASH_CALL_SETTLED = "contract.cash-call.settled";
     static final String CASH_CALL_CANCELLED = "contract.cash-call.cancelled";
+    static final String SECURITY_RECORDED = "contract.security.recorded";
 
     private static final Book EVENT_BOOK = Book.ASSUMED;
     private static final String VERTICAL = "contract";
@@ -76,6 +80,7 @@ public final class ContractEvents {
     private static final String TECHNICAL_ACCOUNT_AGGREGATE = "TechnicalAccount";
     private static final String BORDEREAU_AGGREGATE = "Bordereau";
     private static final String CASH_CALL_AGGREGATE = "CashCall";
+    private static final String SECURITY_AGGREGATE = "Security";
     private static final String SOURCE_BUILD = "eia-contract-expert@0.1.0-SNAPSHOT";
 
     private ContractEvents() {
@@ -270,6 +275,47 @@ public final class ContractEvents {
     public static EventEnvelope cashCallCancelled(
             Contract contract, ContractCashCall cashCall, Instant now) {
         return cashCallEnvelope(contract, cashCall, CASH_CALL_CANCELLED, now);
+    }
+
+    /**
+     * A collateral record is a child aggregate: its own id and version 1, while
+     * the contract id stays the outbox partition key. The brief's payload is
+     * exactly the contract/security identity, the secured and held amounts as
+     * decimal strings, the currency, and the derived status.
+     */
+    public static EventEnvelope securityRecorded(
+            Contract contract, ContractSecurity security, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("securityId", security.id());
+        data.put("securityType", security.securityType());
+        data.put("requiredAmount", money(security.requiredAmount()));
+        data.put("heldAmount", money(security.heldAmount()));
+        data.put("currency", security.currency());
+        data.put("status", security.status());
+
+        long aggregateVersion = 1L;
+        UUID eventId = EventIds.deterministic(contract.tenantId(), SECURITY_AGGREGATE,
+                security.id(), aggregateVersion, SECURITY_RECORDED);
+        return EventEnvelope.builder()
+                .eventId(eventId)
+                .eventType(SECURITY_RECORDED)
+                .eventVersion(1)
+                .occurredAt(now)
+                .recordedAt(now)
+                .tenantId(contract.tenantId())
+                .book(EVENT_BOOK)
+                .vertical(VERTICAL)
+                .aggregateType(SECURITY_AGGREGATE)
+                .aggregateId(security.id())
+                .aggregateVersion(aggregateVersion)
+                .sequence(0)
+                .actor(EventActor.system("eia-contract-expert"))
+                .subject(EventSubject.of(VERTICAL, "security", security.id(), null))
+                .links(List.of())
+                .data(data)
+                .metadata(EventMetadata.v1(SOURCE_BUILD))
+                .build();
     }
 
     private static EventEnvelope cashCallEnvelope(

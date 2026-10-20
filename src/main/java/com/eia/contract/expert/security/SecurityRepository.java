@@ -52,12 +52,13 @@ public class SecurityRepository {
         this.jdbc = jdbc;
     }
 
+    /** Newest collateral record first, which is the public security API's order. */
     public List<ContractSecurity> findAll(UUID tenantId, UUID contractId) {
         return jdbc.query("""
                 SELECT %s
                   FROM contract_security
                  WHERE tenant_id = ? AND contract_id = ?
-                 ORDER BY effective_from, security_type
+                 ORDER BY created_at DESC, id DESC
                 """.formatted(COLUMNS), MAPPER, tenantId, contractId);
     }
 

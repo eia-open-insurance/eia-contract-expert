@@ -173,23 +173,23 @@ CREATE TABLE IF NOT EXISTS contract_security (
     currency CHAR(3) NOT NULL,
     provider_party_id UUID,
     beneficiary_party_id UUID,
-    effective_from DATE NOT NULL,
+    effective_from DATE,
     effective_to DATE,
     expiry_date DATE,
-    status VARCHAR(16) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
     collateral_quality VARCHAR(24),
     document_id UUID,
     release_conditions VARCHAR(400),
     approval_ref VARCHAR(64),
     approved_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT ck_contract_security_amounts CHECK (required_amount >= 0 AND held_amount >= 0),
     CONSTRAINT ck_contract_security_currency CHECK (currency ~ '^[A-Z]{3}$'),
     CONSTRAINT ck_contract_security_dates CHECK (effective_to IS NULL OR effective_from < effective_to),
     CONSTRAINT ck_contract_security_expiry CHECK (expiry_date IS NULL OR expiry_date >= effective_from),
     CONSTRAINT ck_contract_security_status CHECK (status IN (
-        'REQUIRED', 'OUTSTANDING', 'PARTIAL', 'RELEASED', 'EXPIRED', 'BREACH'
+        'ACTIVE', 'REQUIRED', 'OUTSTANDING', 'PARTIAL', 'RELEASED', 'EXPIRED', 'BREACH'
     )),
     CONSTRAINT ck_contract_security_type CHECK (security_type IN (
         'LETTER_OF_CREDIT', 'TRUST_FUND', 'FUNDS_WITHHELD', 'CASH_ADVANCE',
@@ -199,7 +199,23 @@ CREATE TABLE IF NOT EXISTS contract_security (
         REFERENCES contract (id) ON DELETE CASCADE
 );
 
+-- The public security API records the simplified collateral shape: no
+-- effective-from is supplied, and its status starts ACTIVE (or EXPIRED when the
+-- expiry date is past) instead of the bind slice's REQUIRED/OUTSTANDING.
+-- The ALTERs are safe to repeat on an existing database.
+ALTER TABLE contract_security ALTER COLUMN effective_from DROP NOT NULL;
+ALTER TABLE contract_security ALTER COLUMN status SET DEFAULT 'ACTIVE';
+ALTER TABLE contract_security ALTER COLUMN created_at SET DEFAULT now();
+ALTER TABLE contract_security ALTER COLUMN updated_at SET DEFAULT now();
+ALTER TABLE contract_security DROP CONSTRAINT IF EXISTS ck_contract_security_status;
+ALTER TABLE contract_security ADD CONSTRAINT ck_contract_security_status CHECK (status IN (
+    'ACTIVE', 'REQUIRED', 'OUTSTANDING', 'PARTIAL', 'RELEASED', 'EXPIRED', 'BREACH'
+));
+
 CREATE INDEX IF NOT EXISTS ix_contract_security_contract ON contract_security (tenant_id, contract_id, status);
+-- Exact tenant/contract lookup index for the public newest-first list.
+CREATE INDEX IF NOT EXISTS ix_contract_security_tenant_contract
+    ON contract_security (tenant_id, contract_id);
 
 -- SPEC 11.3.4 `contract_cession`. Contract is ASSUMED book only: the check
 -- constraint is the database-level book wall.

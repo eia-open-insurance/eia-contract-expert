@@ -21,7 +21,7 @@ public final class SecurityRules {
             "PARENT_GUARANTEE", "BANK_GUARANTEE", "SECURITIES");
 
     public static final List<String> SECURITY_STATUSES = List.of(
-            "REQUIRED", "OUTSTANDING", "PARTIAL", "RELEASED", "EXPIRED", "BREACH");
+            "ACTIVE", "REQUIRED", "OUTSTANDING", "PARTIAL", "RELEASED", "EXPIRED", "BREACH");
 
     public static final List<String> COLLATERAL_QUALITIES = List.of(
             "CASH", "GOVERNMENT_SECURITIES", "BANK_GUARANTEE", "CORPORATE_GUARANTEE", "OTHER");
@@ -104,7 +104,7 @@ public final class SecurityRules {
     }
 
     public enum SecurityStatus {
-        REQUIRED, OUTSTANDING, PARTIAL, RELEASED, EXPIRED, BREACH
+        ACTIVE, REQUIRED, OUTSTANDING, PARTIAL, RELEASED, EXPIRED, BREACH
     }
 
     public enum CollateralQuality {

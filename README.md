@@ -37,6 +37,15 @@ The technical-account endpoints are also exposed under the brief's public path,
 controller and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
 query parameter.
 
+Security/collateral has a public API:
+`GET/POST /api/v1/contracts/{contractId}/security`. A record carries the security
+type, the secured and held amounts, the contract currency, an optional provider
+party, expiry date, and approval reference. The expert derives the status
+(`ACTIVE`, or `EXPIRED` when the expiry date has already passed) and writes
+`contract.security.recorded` through the transactional outbox. The internal
+`/internal/v1/contracts/{id}/security` endpoint remains for the bind and
+commutation slices and writes the same event.
+
 Period bordereaux have their own public API:
 `GET/POST /api/v1/contracts/{contractId}/bordereaux` and
 `PATCH /api/v1/contracts/{contractId}/bordereaux/{bordereauId}/status`.
@@ -59,8 +68,9 @@ cession capacity, security breach, and commutation approval are enforced here.
 
 Every write also appends its canonical domain event to the transactional outbox
 (`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
-`contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
-`.settled`, `contract.bordereau.received`/`.processed`/`.failed`,
+`contract.cession.recorded`, `contract.security.recorded`,
+`contract.technical-account.created`/`.issued`/`.settled`,
+`contract.bordereau.received`/`.processed`/`.failed`,
 `contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, and the catalog
 lifecycle events). The rows are written in the same transaction; the Quartz
 dispatcher runs only when `eia.outbox.enabled=true`. `IMPLEMENTATION.md` records

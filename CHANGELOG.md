@@ -26,6 +26,14 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   statuses are immutable. Period, strictly positive amount, due date, and
   currency are validated, and every transition writes its
   `contract.cash-call.*` event through the transactional outbox.
+- Security/collateral: the public
+  `GET/POST /api/v1/contracts/{contractId}/security` endpoints record a security
+  type, a strictly positive required amount, non-negative held collateral, the
+  contract currency, an optional provider party, expiry date, and approval
+  reference. The status is derived (`ACTIVE`, or `EXPIRED` when the expiry date
+  is past), the list is newest-first with exactly the public collateral fields,
+  and the create writes `contract.security.recorded` through the transactional
+  outbox. The existing internal security endpoint is unchanged.
 - Invariants: tower overlap (CTR-02), aggregate limit (CTR-03), shares total 100%
   (CTR-01), required terms by contract type, over-collateralisation approval,
   cession capacity (CTR-04) and source share (CTR-05), security breach block

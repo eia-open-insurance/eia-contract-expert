@@ -135,28 +135,33 @@ CREATE TABLE IF NOT EXISTS contract_security (
     currency CHAR(3) NOT NULL,
     provider_party_id UUID,
     beneficiary_party_id UUID,
-    effective_from DATE NOT NULL,
+    effective_from DATE,
     effective_to DATE,
     expiry_date DATE,
-    status VARCHAR(16) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
     collateral_quality VARCHAR(24),
     document_id UUID,
     release_conditions VARCHAR(400),
     approval_ref VARCHAR(64),
     approved_at TIMESTAMP WITH TIME ZONE,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     CONSTRAINT ck_contract_security_amounts CHECK (required_amount >= 0 AND held_amount >= 0),
     CONSTRAINT ck_contract_security_dates CHECK (effective_to IS NULL OR effective_from < effective_to),
     CONSTRAINT ck_contract_security_expiry CHECK (expiry_date IS NULL OR expiry_date >= effective_from),
     CONSTRAINT ck_contract_security_status CHECK (status IN (
-        'REQUIRED', 'OUTSTANDING', 'PARTIAL', 'RELEASED', 'EXPIRED', 'BREACH'
+        'ACTIVE', 'REQUIRED', 'OUTSTANDING', 'PARTIAL', 'RELEASED', 'EXPIRED', 'BREACH'
     )),
     CONSTRAINT ck_contract_security_type CHECK (security_type IN (
         'LETTER_OF_CREDIT', 'TRUST_FUND', 'FUNDS_WITHHELD', 'CASH_ADVANCE',
         'PARENT_GUARANTEE', 'BANK_GUARANTEE', 'SECURITIES'
     ))
 );
+
+CREATE INDEX IF NOT EXISTS ix_contract_security_contract
+    ON contract_security (tenant_id, contract_id, status);
+CREATE INDEX IF NOT EXISTS ix_contract_security_tenant_contract
+    ON contract_security (tenant_id, contract_id);
 
 CREATE TABLE IF NOT EXISTS contract_cession (
     id UUID PRIMARY KEY,

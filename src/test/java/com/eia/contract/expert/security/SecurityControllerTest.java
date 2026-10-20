@@ -2,6 +2,7 @@ package com.eia.contract.expert.security;
 
 import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.Fixtures;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -34,6 +35,9 @@ class SecurityControllerTest {
 
     @MockitoBean
     private SecurityRepository securities;
+
+    @MockitoBean
+    private OutboxRepository outbox;
 
     private void contractInStatus(String status) {
         when(contracts.findById(TENANT, CONTRACT_ID)).thenReturn(Optional.of(Fixtures.contract(status, 1)));
@@ -77,6 +81,8 @@ class SecurityControllerTest {
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.status").value("OUTSTANDING"))
                 .andExpect(jsonPath("$.currency").value("USD"));
+
+        verify(outbox).insert(any());
     }
 
     @Test
