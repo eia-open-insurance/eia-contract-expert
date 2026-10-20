@@ -16,6 +16,7 @@ what remains.
 | Security | `contract_security`, `GET/POST .../security` | collateral above the secured obligation requires an approval reference and timestamp; expiry not before effective; CTR-11 breach blocks cessions |
 | Cessions | `contract_cession`, `GET/POST .../cessions` | CTR-04 ceded loss within the live tower (contract or named layer); CTR-05 active cessions per source <= 100%; ASSUMED book wall; CTR-17 contract currency; cession inside contract term |
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
+| Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
 | Technical accounts | `contract_technical_account`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
@@ -45,6 +46,10 @@ same transaction as the aggregate write:
   `/internal/v1`) -> `contract.technical-account.created`
 - `PATCH .../technical-accounts/{accountId}/status` -> the matching
   `contract.technical-account.issued` or `.settled` event
+- `POST /api/v1/contracts/{contractId}/bordereaux` ->
+  `contract.bordereau.received`
+- `PATCH .../bordereaux/{bordereauId}/status` -> `contract.bordereau.processed`
+  (with the linked technical account) or `contract.bordereau.failed`
 
 Contract events use `aggregateType=Contract`, `vertical=contract`,
 `book=ASSUMED`, and the outbox partition key is the contract id. The cession is
@@ -66,8 +71,11 @@ references; the commuted payload adds the commutation identifier, type, basis,
 `agreedAmount`, `savingsAmount`, dates, release document, `contractClosed`, and
 `releasedSecurities`. Technical-account payloads carry `contractId`,
 `contractNumber`, `accountId`, `accountNumber`, `periodStart`, `periodEnd`,
-`currency`, `balance`, and `status`. Money and percentages are decimal strings
-(SPEC 10.3).
+`currency`, `balance`, and `status`. Period-bordereau payloads carry
+`contractId`, `contractNumber`, `bordereauId`, `bordereauNumber`, `period` (a
+`start`/`end` object), `periodStart`, `periodEnd`, `currency`, `status`, the four
+declared amounts, `lineCount`, and — once linked — `technicalAccountId`. Money and
+percentages are decimal strings (SPEC 10.3).
 
 Event names are not all in the canonical catalog. The catalog has no generic
 `contract.contract.updated`, so the expert publishes that requested change fact
@@ -77,7 +85,10 @@ publishes the specific lifecycle fact. The brief's
 `contract.cession.recorded`. The technical-account events keep the brief's
 `contract.technical-account.*` names; the catalog's only account event is the
 narrower `contract.account.issued`, so the three names are additive child facts
-rather than replacements for it.
+rather than replacements for it. The period-bordereau events keep the brief's
+`contract.bordereau.received`/`.processed`/`.failed` names; the catalog names the
+last two facts `.posted` and `.rejected`, so the brief's names are additive. The
+legacy ingest header publishes no event.
 
 The `outbox_event` DDL is repeated in `schema.sql` using the canonical
 PostgreSQL definition from
@@ -119,6 +130,29 @@ written even when dispatch is disabled, so no event is lost.
   `/internal/v1/...`. The tenant is read from `X-EIA-Tenant` (public convention)
   or `tenantId` (internal convention); supplying both with different values is a
   400. Account numbers use the shared `TA` business key (`TA-2026-00001`).
+- **Period bordereaux share `contract_bordereau` with the ingest header.** The
+  first slice already used the SPEC table for a document-ingest header; the
+  period lifecycle adds `period_start`, `period_end`, `received_date`, the four
+  declared amounts, and `technical_account_id`. Defining a second table would
+  duplicate the SPEC name, so one table carries both shapes. `period_start IS
+  NOT NULL` is the discriminator: the period queries always filter on it, the
+  ingest list filters on `IS NULL`, and the PostgreSQL period key is a partial
+  unique index so ingest rows (null period) never collide. The legacy columns
+  become nullable through guarded `ALTER TABLE` statements, so an existing
+  ingest database is upgraded in place and the DDL remains re-runnable.
+  `notes` is `text`; the legacy slice still caps caller input at 400 characters
+  and the period slice at 4000.
+- **Period-bordereau API and events.** The period resource is mapped only at the
+  brief's `/api/v1/contracts/{contractId}/bordereaux` because the internal path
+  is already occupied by the ingest header. The tenant comes from `X-EIA-Tenant`
+  or `tenantId`, as for technical accounts. The lifecycle is deliberately small:
+  `RECEIVED -> PROCESSED | FAILED`, with both terminal states immutable (409
+  `INVALID_STATUS_TRANSITION`). Processing looks up the technical account for the
+  exact contract period and reuses it; otherwise it creates the DRAFT account
+  through the technical-account slice. Bordereau and account writes therefore
+  share one transaction and one contract row lock. Event names follow the task
+  brief (`received`/`processed`/`failed`); the canonical catalog calls the last
+  two `posted`/`rejected`, recorded here as an additive mismatch.
 - **`share_pct` is points of 100** (SPEC 11.3.4 says "Of 100"), not the decimal
   fraction of SPEC 12.2 `Percent`. The wire value is a decimal string with six
   decimals.
@@ -138,19 +172,24 @@ written even when dispatch is disabled, so no event is lost.
 - `ContractControllerTest`, `LayerControllerTest`, `LayerRulesTest`,
   `ParticipantControllerTest`, `ParticipantRulesTest`, `TermControllerTest`,
   `RequiredTermsTest`, `SecurityControllerTest`, `CessionControllerTest`,
-  `BordereauControllerTest`, `CommutationControllerTest`, `BindControllerTest`,
+  `BordereauHeaderControllerTest`, `BordereauControllerTest`,
+  `CommutationControllerTest`, `BindControllerTest`,
   `TechnicalAccountControllerTest`, `ContractStatusTest`,
   `OutboxSchedulingEnabledTest`, `OutboxSchedulingDisabledTest`,
-  `ContractOutboxFailureRollbackTest`, `ContractOutboxIntegrationTest`, and
-  `TechnicalAccountOutboxIntegrationTest` — 162 tests, run with
-  `./gradlew test`.
+  `ContractOutboxFailureRollbackTest`, `ContractOutboxIntegrationTest`,
+  `TechnicalAccountOutboxIntegrationTest`, and
+  `BordereauOutboxIntegrationTest` — 192 tests, run with `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
   the rollback rule for every write (neither the row nor the event survives).
   `TechnicalAccountOutboxIntegrationTest` proves creation, newest-period-first
   listing, period uniqueness, DRAFT -> ISSUED -> SETTLED with the matching
   events, invalid transitions, the tenant/contract wall, and row/event/key
-  rollback. `ContractOutboxFailureRollbackTest` proves that an outbox append
+  rollback. `BordereauOutboxIntegrationTest` proves period-bordereau creation,
+  newest-period-first listing, duplicate-period rejection, processing into a new
+  or existing technical account, failure, invalid transitions, the
+  tenant/contract wall, and create/process rollback with their events.
+  `ContractOutboxFailureRollbackTest` proves that an outbox append
   failure rolls the contract INSERT back.
   `OutboxSchedulingEnabledTest`/`DisabledTest` prove the Quartz job is created
   only when `eia.outbox.enabled=true`.
@@ -169,8 +208,8 @@ written even when dispatch is disabled, so no event is lost.
   period-within-contract and non-overlap checks (CTR-07), the
   `AGREED`/`DISPUTED`/`SUPERSEDED` states, approval/authority, and payment
   settlement (`TECHNICAL_ACCOUNT_SETTLEMENT`).
-- Commands: endorse, renew, bordereau parsing and posting, reinstatement
-  application, cash calls, loss-aggregate projection.
+- Commands: endorse, renew, bordereau line parsing (the period-level post is
+  implemented), reinstatement application, cash calls, loss-aggregate projection.
 - Outbox delivery has no subscriber, inbox, subscription registry, or gap
   detection (SPEC 7.5.2-7.5.3); the dispatcher and Quartz schedule exist but no
   event is consumed by another vertical.

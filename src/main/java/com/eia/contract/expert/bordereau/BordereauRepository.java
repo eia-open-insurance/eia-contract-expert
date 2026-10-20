@@ -14,41 +14,43 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
-/** Explicit-SQL persistence for {@code contract_bordereau}. */
+/**
+ * Explicit-SQL persistence for the period-bordereau rows of
+ * {@code contract_bordereau}.
+ *
+ * <p>The table is shared with the legacy ingest header. Every query here filters
+ * on {@code period_start IS NOT NULL}, so the two APIs see disjoint row sets and
+ * the period lifecycle cannot accidentally process or list an ingest header.</p>
+ */
 @Repository
 public class BordereauRepository {
 
     private static final String COLUMNS = """
-            id, tenant_id, contract_id, bordereau_number, bordereau_type, period_from, period_to,
-            received_at, source_document_id, source_format, source_reference, status, line_count,
-            valid_line_count, exception_count, total_amount, currency, checksum, processed_at,
-            notes, created_at, updated_at
+            id, tenant_id, contract_id, bordereau_number, period_start, period_end,
+            received_date, currency, premium_amount, loss_amount, commission_amount,
+            other_charges_amount, line_count, notes, status, technical_account_id, created_at
             """;
 
-    private static final RowMapper<ContractBordereau> MAPPER = (rs, rowNum) -> new ContractBordereau(
-            rs.getObject("id", UUID.class),
-            rs.getObject("tenant_id", UUID.class),
-            rs.getObject("contract_id", UUID.class),
-            rs.getString("bordereau_number"),
-            rs.getString("bordereau_type"),
-            rs.getObject("period_from", LocalDate.class),
-            rs.getObject("period_to", LocalDate.class),
-            rs.getTimestamp("received_at").toInstant(),
-            rs.getObject("source_document_id", UUID.class),
-            rs.getString("source_format"),
-            rs.getString("source_reference"),
-            rs.getString("status"),
-            rs.getInt("line_count"),
-            (Integer) rs.getObject("valid_line_count"),
-            (Integer) rs.getObject("exception_count"),
-            rs.getBigDecimal("total_amount"),
-            rs.getString("currency"),
-            rs.getString("checksum"),
-            instant(rs, "processed_at"),
-            rs.getString("notes"),
-            rs.getTimestamp("created_at").toInstant(),
-            rs.getTimestamp("updated_at").toInstant()
-    );
+    private static final RowMapper<ContractBordereau> MAPPER = (rs, rowNum) ->
+            new ContractBordereau(
+                    rs.getObject("id", UUID.class),
+                    rs.getObject("tenant_id", UUID.class),
+                    rs.getObject("contract_id", UUID.class),
+                    rs.getString("bordereau_number"),
+                    rs.getObject("period_start", LocalDate.class),
+                    rs.getObject("period_end", LocalDate.class),
+                    rs.getObject("received_date", LocalDate.class),
+                    rs.getString("currency"),
+                    rs.getBigDecimal("premium_amount"),
+                    rs.getBigDecimal("loss_amount"),
+                    rs.getBigDecimal("commission_amount"),
+                    rs.getBigDecimal("other_charges_amount"),
+                    rs.getInt("line_count"),
+                    rs.getString("notes"),
+                    rs.getString("status"),
+                    rs.getObject("technical_account_id", UUID.class),
+                    rs.getTimestamp("created_at").toInstant()
+            );
 
     private final JdbcTemplate jdbc;
 
@@ -56,12 +58,13 @@ public class BordereauRepository {
         this.jdbc = jdbc;
     }
 
+    /** Newest period first, as required by the list endpoint. */
     public List<ContractBordereau> findAll(UUID tenantId, UUID contractId) {
         return jdbc.query("""
                 SELECT %s
                   FROM contract_bordereau
-                 WHERE tenant_id = ? AND contract_id = ?
-                 ORDER BY period_from DESC, bordereau_number
+                 WHERE tenant_id = ? AND contract_id = ? AND period_start IS NOT NULL
+                 ORDER BY period_start DESC, period_end DESC, created_at DESC, bordereau_number
                 """.formatted(COLUMNS), MAPPER, tenantId, contractId);
     }
 
@@ -69,45 +72,62 @@ public class BordereauRepository {
         return jdbc.query("""
                 SELECT %s
                   FROM contract_bordereau
-                 WHERE tenant_id = ? AND contract_id = ? AND id = ?
+                 WHERE tenant_id = ? AND contract_id = ? AND id = ? AND period_start IS NOT NULL
                 """.formatted(COLUMNS), MAPPER, tenantId, contractId, id).stream().findFirst();
-    }
-
-    public ContractBordereau get(UUID tenantId, UUID contractId, UUID id) {
-        return findById(tenantId, contractId, id)
-                .orElseThrow(() -> new ResourceNotFoundException("Bordereau", id));
     }
 
     public ContractBordereau create(ContractBordereau bordereau) {
         try {
             jdbc.update("""
-                    INSERT INTO contract_bordereau (id, tenant_id, contract_id, bordereau_number,
-                                                    bordereau_type, period_from, period_to, received_at,
-                                                    source_document_id, source_format, source_reference,
-                                                    status, line_count, valid_line_count, exception_count,
-                                                    total_amount, currency, checksum, notes,
-                                                    created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO contract_bordereau (
+                        id, tenant_id, contract_id, bordereau_number, period_start, period_end,
+                        received_date, currency, premium_amount, loss_amount, commission_amount,
+                        other_charges_amount, line_count, notes, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     bordereau.id(), bordereau.tenantId(), bordereau.contractId(),
-                    bordereau.bordereauNumber(), bordereau.bordereauType(), bordereau.periodFrom(),
-                    bordereau.periodTo(), Timestamp.from(bordereau.receivedAt()),
-                    bordereau.sourceDocumentId(), bordereau.sourceFormat(),
-                    bordereau.sourceReference(), bordereau.status(), bordereau.lineCount(),
-                    bordereau.validLineCount(), bordereau.exceptionCount(),
-                    bordereau.totalAmount(), bordereau.currency(), bordereau.checksum(),
-                    bordereau.notes(), Timestamp.from(bordereau.createdAt()),
-                    Timestamp.from(bordereau.updatedAt()));
+                    bordereau.bordereauNumber(), bordereau.periodStart(), bordereau.periodEnd(),
+                    bordereau.receivedDate(), bordereau.currency(), bordereau.premiumAmount(),
+                    bordereau.lossAmount(), bordereau.commissionAmount(),
+                    bordereau.otherChargesAmount(), bordereau.lineCount(), bordereau.notes(),
+                    bordereau.status(), Timestamp.from(bordereau.createdAt()),
+                    Timestamp.from(bordereau.createdAt()));
         } catch (DuplicateKeyException ex) {
-            throw new ContractConflictException("DUPLICATE_BORDEREAU_NUMBER",
-                    "Bordereau " + bordereau.bordereauNumber() + " already exists on this contract",
-                    "bordereauNumber", "Bordereau numbers are unique per contract");
+            throw new ContractConflictException("DUPLICATE_BORDEREAU_PERIOD",
+                    "A bordereau already exists for contract period "
+                            + bordereau.periodStart() + " to " + bordereau.periodEnd(),
+                    "periodStart", "Periods are unique per tenant and contract");
         }
-        return get(bordereau.tenantId(), bordereau.contractId(), bordereau.id());
+        return findById(bordereau.tenantId(), bordereau.contractId(), bordereau.id())
+                .orElseThrow(() -> new ResourceNotFoundException("Bordereau", bordereau.id()));
     }
 
-    private static Instant instant(java.sql.ResultSet rs, String column) throws java.sql.SQLException {
-        Timestamp value = rs.getTimestamp(column);
-        return value == null ? null : value.toInstant();
+    /**
+     * Compares and sets the status so two concurrent transitions cannot both win.
+     * A zero-row update means the bordereau disappeared or another request
+     * already moved it; both are reported as a 404 or a 409 by the controller.
+     */
+    public ContractBordereau updateStatus(UUID tenantId, UUID contractId, UUID id,
+                                          BordereauStatus expected, BordereauStatus target,
+                                          String notes, UUID technicalAccountId) {
+        int updated = jdbc.update("""
+                UPDATE contract_bordereau
+                   SET status = ?,
+                       notes = COALESCE(?, notes),
+                       technical_account_id = ?,
+                       updated_at = ?
+                 WHERE tenant_id = ? AND contract_id = ? AND id = ? AND status = ?
+                   AND period_start IS NOT NULL
+                """, target.name(), notes, technicalAccountId, Timestamp.from(Instant.now()),
+                tenantId, contractId, id, expected.name());
+        if (updated == 0) {
+            ContractBordereau current = findById(tenantId, contractId, id)
+                    .orElseThrow(() -> new ResourceNotFoundException("Bordereau", id));
+            throw new ContractConflictException("INVALID_STATUS_TRANSITION",
+                    "Bordereau status cannot move from " + current.status() + " to " + target,
+                    "status", "Allowed transitions: RECEIVED -> PROCESSED or RECEIVED -> FAILED");
+        }
+        return findById(tenantId, contractId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Bordereau", id));
     }
 }

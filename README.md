@@ -24,7 +24,8 @@ under `/internal/v1/contracts`:
 - `GET/POST /{id}/terms`, `GET /{id}/terms/requirements`
 - `GET/POST /{id}/security`
 - `GET/POST /{id}/cessions`
-- `GET/POST /{id}/bordereaux`, `GET /{id}/bordereaux/{bordereauId}`
+- `GET/POST /{id}/bordereaux`, `GET /{id}/bordereaux/{bordereauId}` (legacy
+  ingest header)
 - `GET/POST /{id}/commutations`, `POST /{id}/commutations/{commutationId}/approve`,
   `POST /{id}/commutations/{commutationId}/execute`
 - `GET/POST /{id}/technical-accounts`,
@@ -36,6 +37,14 @@ The technical-account endpoints are also exposed under the brief's public path,
 controller and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
 query parameter.
 
+Period bordereaux have their own public API:
+`GET/POST /api/v1/contracts/{contractId}/bordereaux` and
+`PATCH /api/v1/contracts/{contractId}/bordereaux/{bordereauId}/status`.
+A bordereau is received with declared premium, loss, commission, and other-charge
+totals; processing it creates or reuses the technical account for the same
+contract period and links it. Both bordereau shapes share `contract_bordereau`,
+and `IMPLEMENTATION.md` records how they are kept apart.
+
 Bind is a guarded command with an approver; `PATCH /{id}/status` no longer accepts
 `BOUND`. Layer overlaps, share totals, required terms, over-collateralisation,
 cession capacity, security breach, and commutation approval are enforced here.
@@ -43,10 +52,10 @@ cession capacity, security breach, and commutation approval are enforced here.
 Every write also appends its canonical domain event to the transactional outbox
 (`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
 `contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
-`.settled`, and the catalog lifecycle events). The rows are
-written in the same transaction; the Quartz dispatcher runs only when
-`eia.outbox.enabled=true`. `IMPLEMENTATION.md` records the invariants, schema
-decisions, event-name mismatches, and remaining SPEC gaps.
+`.settled`, `contract.bordereau.received`/`.processed`/`.failed`, and the catalog
+lifecycle events). The rows are written in the same transaction; the Quartz
+dispatcher runs only when `eia.outbox.enabled=true`. `IMPLEMENTATION.md` records
+the invariants, schema decisions, event-name mismatches, and remaining SPEC gaps.
 
 ## Responsibilities
 

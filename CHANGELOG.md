@@ -29,16 +29,30 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   (`cededPremium - commission - cededLosses + otherCharges`): positive is due
   from the cedent to the reinsurer. Periods are unique per tenant and contract;
   amounts must be non-negative and the currency three letters.
+- Period bordereaux: `contract_bordereau` now stores `period_start`,
+  `period_end`, `received_date`, `premium_amount`, `loss_amount`,
+  `commission_amount`, `other_charges_amount`, and `technical_account_id`, with
+  a unique period per tenant and contract. The public
+  `GET/POST /api/v1/contracts/{id}/bordereaux` and
+  `PATCH .../{bordereauId}/status` endpoints receive a bordereau, process it into
+  a new or existing technical account (`RECEIVED -> PROCESSED`), or record a
+  failure (`RECEIVED -> FAILED`). Terminal statuses are immutable.
+  `contract.bordereau.received`/`.processed`/`.failed` are written through the
+  transactional outbox in the same transaction as the row and account.
+- The legacy ingest-header bordereau slice is retained under
+  `/internal/v1/contracts/{id}/bordereaux` and shares the table, discriminated by
+  `period_start`.
 - Bind is a command with an approver; `PATCH /status` no longer accepts `BOUND`.
 - Transactional outbox production through `com.eia.platform.libs.outbox`:
   `outbox_event` DDL, `contract.contract.created`, `.updated`, `.bound`,
   `.signed`, `.endorsed`, `.expired`, `.cancelled`, `.commuted`,
-  `contract.cession.recorded`, and `contract.technical-account.created`/`.issued`/
-  `.settled`, written in the aggregate transaction.
+  `contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
+  `.settled`, and `contract.bordereau.received`/`.processed`/`.failed`, written
+  in the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 162 JUnit tests, including outbox payload, rollback, failure-atomicity, and
-  scheduling tests.
+- 192 JUnit tests, including outbox payload, rollback, failure-atomicity,
+  bordereau lifecycle, and scheduling tests.
 
 ### Changed
 

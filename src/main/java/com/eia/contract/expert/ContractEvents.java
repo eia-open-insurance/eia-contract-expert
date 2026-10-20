@@ -1,5 +1,7 @@
 package com.eia.contract.expert;
 
+import com.eia.contract.expert.bordereau.BordereauStatus;
+import com.eia.contract.expert.bordereau.ContractBordereau;
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
@@ -32,7 +34,9 @@ import java.util.UUID;
  * from the task brief maps to the catalog name {@code contract.cession.recorded}.
  * Technical accounts publish the brief's {@code contract.technical-account.*}
  * child-aggregate facts; the catalog only names {@code contract.account.issued}.
- * The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
+ * Period bordereaux publish the brief's {@code contract.bordereau.*} facts; the
+ * catalog names the last two {@code .posted} and {@code .rejected}. The
+ * mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
  *
  * <p>Contract is an ASSUMED-book-only vertical, so every envelope carries
  * {@code book=ASSUMED}. Contract rows start at version 0 for API compatibility
@@ -54,12 +58,16 @@ public final class ContractEvents {
     static final String TECHNICAL_ACCOUNT_CREATED = "contract.technical-account.created";
     static final String TECHNICAL_ACCOUNT_ISSUED = "contract.technical-account.issued";
     static final String TECHNICAL_ACCOUNT_SETTLED = "contract.technical-account.settled";
+    static final String BORDEREAU_RECEIVED = "contract.bordereau.received";
+    static final String BORDEREAU_PROCESSED = "contract.bordereau.processed";
+    static final String BORDEREAU_FAILED = "contract.bordereau.failed";
 
     private static final Book EVENT_BOOK = Book.ASSUMED;
     private static final String VERTICAL = "contract";
     private static final String CONTRACT_AGGREGATE = "Contract";
     private static final String CESSION_AGGREGATE = "Cession";
     private static final String TECHNICAL_ACCOUNT_AGGREGATE = "TechnicalAccount";
+    private static final String BORDEREAU_AGGREGATE = "Bordereau";
     private static final String SOURCE_BUILD = "eia-contract-expert@0.1.0-SNAPSHOT";
 
     private ContractEvents() {
@@ -205,6 +213,77 @@ public final class ContractEvents {
     public static EventEnvelope technicalAccountSettled(
             Contract contract, ContractTechnicalAccount account, Instant now) {
         return technicalAccountEnvelope(contract, account, TECHNICAL_ACCOUNT_SETTLED, now);
+    }
+
+    /**
+     * A period bordereau is a child aggregate: its own id and lifecycle version
+     * (1 received, 2 processed or failed), while the contract id stays the outbox
+     * partition key. The payload carries the contract and bordereau identity, the
+     * period as both a nested object and flat dates, the currency, the status,
+     * the declared amounts, and the linked technical account when one exists.
+     */
+    public static EventEnvelope bordereauReceived(
+            Contract contract, ContractBordereau bordereau, Instant now) {
+        return bordereauEnvelope(contract, bordereau, BORDEREAU_RECEIVED, now);
+    }
+
+    public static EventEnvelope bordereauProcessed(
+            Contract contract, ContractBordereau bordereau, Instant now) {
+        return bordereauEnvelope(contract, bordereau, BORDEREAU_PROCESSED, now);
+    }
+
+    public static EventEnvelope bordereauFailed(
+            Contract contract, ContractBordereau bordereau, Instant now) {
+        return bordereauEnvelope(contract, bordereau, BORDEREAU_FAILED, now);
+    }
+
+    private static EventEnvelope bordereauEnvelope(
+            Contract contract, ContractBordereau bordereau, String eventType, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("contractNumber", contract.contractNumber());
+        data.put("bordereauId", bordereau.id());
+        data.put("bordereauNumber", bordereau.bordereauNumber());
+
+        Map<String, Object> period = new LinkedHashMap<>();
+        period.put("start", date(bordereau.periodStart()));
+        period.put("end", date(bordereau.periodEnd()));
+        data.put("period", period);
+        data.put("periodStart", date(bordereau.periodStart()));
+        data.put("periodEnd", date(bordereau.periodEnd()));
+
+        data.put("currency", bordereau.currency());
+        data.put("status", bordereau.status());
+        putIfPresent(data, "technicalAccountId", bordereau.technicalAccountId());
+        putIfPresent(data, "premiumAmount", money(bordereau.premiumAmount()));
+        putIfPresent(data, "lossAmount", money(bordereau.lossAmount()));
+        putIfPresent(data, "commissionAmount", money(bordereau.commissionAmount()));
+        putIfPresent(data, "otherChargesAmount", money(bordereau.otherChargesAmount()));
+        data.put("lineCount", bordereau.lineCount());
+
+        long aggregateVersion = BordereauStatus.valueOf(bordereau.status()).eventVersion();
+        UUID eventId = EventIds.deterministic(contract.tenantId(), BORDEREAU_AGGREGATE,
+                bordereau.id(), aggregateVersion, eventType);
+        return EventEnvelope.builder()
+                .eventId(eventId)
+                .eventType(eventType)
+                .eventVersion(1)
+                .occurredAt(now)
+                .recordedAt(now)
+                .tenantId(contract.tenantId())
+                .book(EVENT_BOOK)
+                .vertical(VERTICAL)
+                .aggregateType(BORDEREAU_AGGREGATE)
+                .aggregateId(bordereau.id())
+                .aggregateVersion(aggregateVersion)
+                .sequence(0)
+                .actor(EventActor.system("eia-contract-expert"))
+                .subject(EventSubject.of(VERTICAL, "bordereau", bordereau.id(),
+                        bordereau.bordereauNumber()))
+                .links(List.of())
+                .data(data)
+                .metadata(EventMetadata.v1(SOURCE_BUILD))
+                .build();
     }
 
     private static EventEnvelope technicalAccountEnvelope(

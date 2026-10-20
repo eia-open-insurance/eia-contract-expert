@@ -7,7 +7,7 @@ import com.eia.contract.expert.ContractGuard;
 import com.eia.contract.expert.ContractNotFoundException;
 import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.Values;
-import com.eia.contract.expert.bordereau.BordereauRepository;
+import com.eia.contract.expert.bordereau.BordereauHeaderRepository;
 import com.eia.contract.expert.layer.ContractLayer;
 import com.eia.contract.expert.layer.LayerRepository;
 import com.eia.contract.expert.security.SecurityRepository;
@@ -40,13 +40,13 @@ public class CessionController {
     private final CessionRepository cessions;
     private final LayerRepository layers;
     private final SecurityRepository securities;
-    private final BordereauRepository bordereaux;
+    private final BordereauHeaderRepository bordereaux;
     private final BusinessKeys keys;
     private final OutboxRepository outbox;
 
     public CessionController(ContractRepository contracts, CessionRepository cessions,
                              LayerRepository layers, SecurityRepository securities,
-                             BordereauRepository bordereaux, BusinessKeys keys,
+                             BordereauHeaderRepository bordereaux, BusinessKeys keys,
                              OutboxRepository outbox) {
         this.contracts = contracts;
         this.cessions = cessions;

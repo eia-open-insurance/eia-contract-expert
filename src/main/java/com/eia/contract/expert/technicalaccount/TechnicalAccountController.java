@@ -88,16 +88,29 @@ public class TechnicalAccountController {
         // The contract row lock serializes period uniqueness and business-key
         // generation for this contract without relying on the unique index alone.
         Contract contract = requireContractForUpdate(tenantId, contractId);
+        return createForContract(contract, request);
+    }
+
+    /**
+     * Creates the DRAFT account and appends its event for an already-resolved,
+     * tenant-scoped and locked contract. A period bordereau calls this inside its
+     * own transaction so the account and the bordereau commit or roll back
+     * together.
+     */
+    @Transactional
+    public ContractTechnicalAccount createForContract(Contract contract,
+                                                      CreateTechnicalAccountRequest request) {
         TechnicalAccountRules.PeriodAmounts values = TechnicalAccountRules.validate(request);
-        String accountNumber = keys.nextPortable(tenantId, ACCOUNT_PREFIX,
+        String accountNumber = keys.nextPortable(contract.tenantId(), ACCOUNT_PREFIX,
                 values.periodStart().getYear());
         ContractTechnicalAccount account = ContractTechnicalAccount.draft(
-                tenantId, contractId, accountNumber,
+                contract.tenantId(), contract.id(), accountNumber,
                 values.periodStart(), values.periodEnd(), values.currency(),
                 values.cededPremium(), values.cededLosses(), values.commission(),
                 values.otherCharges(), values.balance());
         ContractTechnicalAccount created = accounts.create(account);
-        publish(ContractEvents.technicalAccountCreated(contract, created, Instant.now()), contractId);
+        publish(ContractEvents.technicalAccountCreated(contract, created, Instant.now()),
+                contract.id());
         return created;
     }
 

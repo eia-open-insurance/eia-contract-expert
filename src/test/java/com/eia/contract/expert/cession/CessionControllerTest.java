@@ -3,7 +3,7 @@ package com.eia.contract.expert.cession;
 import com.eia.contract.expert.BusinessKeys;
 import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.Fixtures;
-import com.eia.contract.expert.bordereau.BordereauRepository;
+import com.eia.contract.expert.bordereau.BordereauHeaderRepository;
 import com.eia.contract.expert.layer.LayerRepository;
 import com.eia.contract.expert.security.SecurityRepository;
 import com.eia.platform.libs.outbox.OutboxRepository;
@@ -55,7 +55,7 @@ class CessionControllerTest {
     private SecurityRepository securities;
 
     @MockitoBean
-    private BordereauRepository bordereaux;
+    private BordereauHeaderRepository bordereaux;
 
     @MockitoBean
     private BusinessKeys keys;

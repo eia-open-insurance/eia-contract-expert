@@ -263,6 +263,81 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
 
+-- Shared by the legacy ingest header and the period-bordereau lifecycle. The
+-- legacy columns are nullable because a period bordereau sets only the
+-- financial columns (and vice versa); `period_start IS NOT NULL` distinguishes
+-- the period rows. PostgreSQL uses a partial unique index for the period key;
+-- H2 has no partial indexes, but its unique constraint treats NULL periods as
+-- distinct, so ingest headers do not collide.
+CREATE TABLE IF NOT EXISTS contract_bordereau (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    contract_id UUID NOT NULL,
+    bordereau_number VARCHAR(32) NOT NULL,
+    bordereau_type VARCHAR(24),
+    period_from DATE,
+    period_to DATE,
+    received_at TIMESTAMP WITH TIME ZONE,
+    source_document_id UUID,
+    source_format VARCHAR(12),
+    source_reference VARCHAR(128),
+    status VARCHAR(20) NOT NULL,
+    line_count INTEGER NOT NULL DEFAULT 0,
+    valid_line_count INTEGER,
+    exception_count INTEGER,
+    total_amount NUMERIC(19,4),
+    currency CHAR(3),
+    checksum VARCHAR(64),
+    processed_at TIMESTAMP WITH TIME ZONE,
+    notes TEXT,
+    period_start DATE,
+    period_end DATE,
+    received_date DATE,
+    premium_amount NUMERIC(19,4),
+    loss_amount NUMERIC(19,4),
+    commission_amount NUMERIC(19,4),
+    other_charges_amount NUMERIC(19,4),
+    technical_account_id UUID,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT uq_contract_bordereau_number UNIQUE (tenant_id, contract_id, bordereau_number),
+    CONSTRAINT uq_contract_bordereau_period
+        UNIQUE (tenant_id, contract_id, period_start, period_end),
+    CONSTRAINT ck_contract_bordereau_period CHECK (
+        period_from IS NULL OR period_to IS NULL OR period_from <= period_to),
+    CONSTRAINT ck_contract_bordereau_line_count CHECK (line_count >= 0),
+    CONSTRAINT ck_contract_bordereau_valid_count CHECK (
+        valid_line_count IS NULL OR (valid_line_count >= 0 AND valid_line_count <= line_count)),
+    CONSTRAINT ck_contract_bordereau_exception_count CHECK (
+        exception_count IS NULL OR exception_count >= 0),
+    CONSTRAINT ck_contract_bordereau_amount CHECK (total_amount IS NULL OR total_amount >= 0),
+    CONSTRAINT ck_contract_bordereau_status CHECK (status IN (
+        'RECEIVED', 'PARSING', 'VALIDATED', 'PARTIALLY_POSTED', 'POSTED', 'REJECTED',
+        'SUPERSEDED', 'PROCESSED', 'FAILED'
+    )),
+    CONSTRAINT ck_contract_bordereau_format CHECK (
+        source_format IS NULL OR source_format IN ('CSV', 'XLSX', 'XML', 'JSON', 'MANUAL')),
+    CONSTRAINT ck_contract_bordereau_type CHECK (
+        bordereau_type IS NULL OR bordereau_type IN (
+            'PREMIUM', 'CLAIMS', 'CESSION', 'ACCOUNTING', 'LOSS_DEVELOPMENT', 'SECURITY',
+            'CASH_LOSS'
+        )),
+    CONSTRAINT ck_contract_bordereau_financial_period CHECK (
+        period_start IS NULL OR period_end IS NULL OR period_start < period_end),
+    CONSTRAINT ck_contract_bordereau_financial_amounts CHECK (
+        (premium_amount IS NULL OR premium_amount >= 0)
+        AND (loss_amount IS NULL OR loss_amount >= 0)
+        AND (commission_amount IS NULL OR commission_amount >= 0)
+        AND (other_charges_amount IS NULL OR other_charges_amount >= 0)),
+    CONSTRAINT fk_contract_bordereau_contract FOREIGN KEY (contract_id)
+        REFERENCES contract (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_bordereau_contract
+    ON contract_bordereau (tenant_id, contract_id, period_from);
+CREATE INDEX IF NOT EXISTS ix_contract_bordereau_period
+    ON contract_bordereau (tenant_id, contract_id, period_start);
+
 -- H2-compatible copy of the PostgreSQL outbox table. JSON payloads are TEXT
 -- here; production DDL uses jsonb.
 CREATE TABLE IF NOT EXISTS outbox_event (

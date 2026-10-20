@@ -252,18 +252,24 @@ CREATE TABLE IF NOT EXISTS contract_cession (
 CREATE INDEX IF NOT EXISTS ix_contract_cession_contract
     ON contract_cession (tenant_id, contract_id, status);
 
--- SPEC 11.3.4 `contract_bordereau`.
+-- SPEC 11.3.4 `contract_bordereau`, extended with the period-bordereau
+-- lifecycle. A period bordereau sets `period_start`/`period_end`,
+-- `received_date`, the four declared amounts, and (after processing) the
+-- technical account it posted to. The legacy ingest header leaves those null
+-- and owns the remaining columns, so both shapes share one table. The
+-- `period_start IS NOT NULL` predicate is the discriminator.
 CREATE TABLE IF NOT EXISTS contract_bordereau (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
     contract_id UUID NOT NULL,
     bordereau_number VARCHAR(32) NOT NULL,
-    bordereau_type VARCHAR(24) NOT NULL,
-    period_from DATE NOT NULL,
-    period_to DATE NOT NULL,
-    received_at TIMESTAMPTZ NOT NULL,
+    -- Legacy ingest header (nullable for period bordereaux).
+    bordereau_type VARCHAR(24),
+    period_from DATE,
+    period_to DATE,
+    received_at TIMESTAMPTZ,
     source_document_id UUID,
-    source_format VARCHAR(12) NOT NULL,
+    source_format VARCHAR(12),
     source_reference VARCHAR(128),
     status VARCHAR(20) NOT NULL,
     line_count INTEGER NOT NULL DEFAULT 0,
@@ -273,31 +279,94 @@ CREATE TABLE IF NOT EXISTS contract_bordereau (
     currency CHAR(3),
     checksum VARCHAR(64),
     processed_at TIMESTAMPTZ,
-    notes VARCHAR(400),
+    notes TEXT,
+    -- Period-bordereau lifecycle.
+    period_start DATE,
+    period_end DATE,
+    received_date DATE,
+    premium_amount NUMERIC(19,4),
+    loss_amount NUMERIC(19,4),
+    commission_amount NUMERIC(19,4),
+    other_charges_amount NUMERIC(19,4),
+    technical_account_id UUID,
     created_at TIMESTAMPTZ NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT uq_contract_bordereau_number UNIQUE (tenant_id, contract_id, bordereau_number),
-    CONSTRAINT ck_contract_bordereau_period CHECK (period_from <= period_to),
+    CONSTRAINT ck_contract_bordereau_period CHECK (
+        period_from IS NULL OR period_to IS NULL OR period_from <= period_to),
     CONSTRAINT ck_contract_bordereau_line_count CHECK (line_count >= 0),
     CONSTRAINT ck_contract_bordereau_valid_count CHECK (
         valid_line_count IS NULL OR (valid_line_count >= 0 AND valid_line_count <= line_count)),
     CONSTRAINT ck_contract_bordereau_exception_count CHECK (
         exception_count IS NULL OR exception_count >= 0),
     CONSTRAINT ck_contract_bordereau_amount CHECK (total_amount IS NULL OR total_amount >= 0),
-    CONSTRAINT ck_contract_bordereau_currency CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT ck_contract_bordereau_currency CHECK (
+        currency IS NULL OR currency ~ '^[A-Z]{3}$'),
     CONSTRAINT ck_contract_bordereau_status CHECK (status IN (
-        'RECEIVED', 'PARSING', 'VALIDATED', 'PARTIALLY_POSTED', 'POSTED', 'REJECTED', 'SUPERSEDED'
+        'RECEIVED', 'PARSING', 'VALIDATED', 'PARTIALLY_POSTED', 'POSTED', 'REJECTED',
+        'SUPERSEDED', 'PROCESSED', 'FAILED'
     )),
-    CONSTRAINT ck_contract_bordereau_format CHECK (source_format IN ('CSV', 'XLSX', 'XML', 'JSON', 'MANUAL')),
-    CONSTRAINT ck_contract_bordereau_type CHECK (bordereau_type IN (
-        'PREMIUM', 'CLAIMS', 'CESSION', 'ACCOUNTING', 'LOSS_DEVELOPMENT', 'SECURITY', 'CASH_LOSS'
-    )),
+    CONSTRAINT ck_contract_bordereau_format CHECK (
+        source_format IS NULL OR source_format IN ('CSV', 'XLSX', 'XML', 'JSON', 'MANUAL')),
+    CONSTRAINT ck_contract_bordereau_type CHECK (
+        bordereau_type IS NULL OR bordereau_type IN (
+            'PREMIUM', 'CLAIMS', 'CESSION', 'ACCOUNTING', 'LOSS_DEVELOPMENT', 'SECURITY',
+            'CASH_LOSS'
+        )),
+    CONSTRAINT ck_contract_bordereau_financial_period CHECK (
+        period_start IS NULL OR period_end IS NULL OR period_start < period_end),
+    CONSTRAINT ck_contract_bordereau_financial_amounts CHECK (
+        (premium_amount IS NULL OR premium_amount >= 0)
+        AND (loss_amount IS NULL OR loss_amount >= 0)
+        AND (commission_amount IS NULL OR commission_amount >= 0)
+        AND (other_charges_amount IS NULL OR other_charges_amount >= 0)),
     CONSTRAINT fk_contract_bordereau_contract FOREIGN KEY (contract_id)
         REFERENCES contract (id) ON DELETE CASCADE
 );
 
+-- The CREATE above only runs on a database that does not have the table yet.
+-- These statements bring a database created by the ingest slice forward without
+-- dropping its rows: the legacy columns become nullable, the note becomes text,
+-- the status constraint learns the period lifecycle, and the period keys and
+-- checks are added. Each statement is safe to re-run on every start.
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS period_start DATE;
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS period_end DATE;
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS received_date DATE;
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS premium_amount NUMERIC(19,4);
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS loss_amount NUMERIC(19,4);
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS commission_amount NUMERIC(19,4);
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS other_charges_amount NUMERIC(19,4);
+ALTER TABLE contract_bordereau ADD COLUMN IF NOT EXISTS technical_account_id UUID;
+ALTER TABLE contract_bordereau ALTER COLUMN bordereau_type DROP NOT NULL;
+ALTER TABLE contract_bordereau ALTER COLUMN period_from DROP NOT NULL;
+ALTER TABLE contract_bordereau ALTER COLUMN period_to DROP NOT NULL;
+ALTER TABLE contract_bordereau ALTER COLUMN received_at DROP NOT NULL;
+ALTER TABLE contract_bordereau ALTER COLUMN source_format DROP NOT NULL;
+ALTER TABLE contract_bordereau ALTER COLUMN notes TYPE TEXT;
+ALTER TABLE contract_bordereau DROP CONSTRAINT IF EXISTS ck_contract_bordereau_status;
+ALTER TABLE contract_bordereau ADD CONSTRAINT ck_contract_bordereau_status CHECK (status IN (
+    'RECEIVED', 'PARSING', 'VALIDATED', 'PARTIALLY_POSTED', 'POSTED', 'REJECTED',
+    'SUPERSEDED', 'PROCESSED', 'FAILED'
+));
+ALTER TABLE contract_bordereau DROP CONSTRAINT IF EXISTS ck_contract_bordereau_financial_period;
+ALTER TABLE contract_bordereau ADD CONSTRAINT ck_contract_bordereau_financial_period CHECK (
+    period_start IS NULL OR period_end IS NULL OR period_start < period_end);
+ALTER TABLE contract_bordereau DROP CONSTRAINT IF EXISTS ck_contract_bordereau_financial_amounts;
+ALTER TABLE contract_bordereau ADD CONSTRAINT ck_contract_bordereau_financial_amounts CHECK (
+    (premium_amount IS NULL OR premium_amount >= 0)
+    AND (loss_amount IS NULL OR loss_amount >= 0)
+    AND (commission_amount IS NULL OR commission_amount >= 0)
+    AND (other_charges_amount IS NULL OR other_charges_amount >= 0));
+
 CREATE INDEX IF NOT EXISTS ix_contract_bordereau_contract
     ON contract_bordereau (tenant_id, contract_id, period_from);
+CREATE INDEX IF NOT EXISTS ix_contract_bordereau_period
+    ON contract_bordereau (tenant_id, contract_id, period_start);
+-- NULL periods (legacy ingest rows) are not period duplicates, so the unique
+-- index is partial; PostgreSQL treats them as outside the financial lifecycle.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_bordereau_period
+    ON contract_bordereau (tenant_id, contract_id, period_start, period_end)
+    WHERE period_start IS NOT NULL;
 
 -- SPEC 11.3.4 `contract_commutation`.
 CREATE TABLE IF NOT EXISTS contract_commutation (

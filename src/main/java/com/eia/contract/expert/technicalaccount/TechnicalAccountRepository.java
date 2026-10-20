@@ -64,6 +64,21 @@ public class TechnicalAccountRepository {
                 """.formatted(COLUMNS), MAPPER, tenantId, contractId, id).stream().findFirst();
     }
 
+    /**
+     * The account recorded for one contract period, if any. A period bordereau
+     * uses this to reuse the account instead of creating a duplicate.
+     */
+    public Optional<ContractTechnicalAccount> findForPeriod(UUID tenantId, UUID contractId,
+                                                            LocalDate periodStart,
+                                                            LocalDate periodEnd) {
+        return jdbc.query("""
+                SELECT %s
+                  FROM contract_technical_account
+                 WHERE tenant_id = ? AND contract_id = ? AND period_start = ? AND period_end = ?
+                """.formatted(COLUMNS), MAPPER, tenantId, contractId, periodStart, periodEnd)
+                .stream().findFirst();
+    }
+
     public ContractTechnicalAccount create(ContractTechnicalAccount account) {
         try {
             jdbc.update("""
