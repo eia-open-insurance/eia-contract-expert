@@ -263,6 +263,35 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
 
+-- Cash calls. H2 has no PostgreSQL regex operator, so the currency shape is
+-- enforced only by the API here; the status, period, and positive-amount checks
+-- mirror the PostgreSQL schema.
+CREATE TABLE IF NOT EXISTS contract_cash_call (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    contract_id UUID NOT NULL,
+    call_number VARCHAR(32) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    amount NUMERIC(19,4) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    due_date DATE NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT uq_contract_cash_call_number UNIQUE (tenant_id, contract_id, call_number),
+    CONSTRAINT ck_contract_cash_call_period CHECK (period_start < period_end),
+    CONSTRAINT ck_contract_cash_call_amount CHECK (amount > 0),
+    CONSTRAINT ck_contract_cash_call_status CHECK (status IN (
+        'REQUESTED', 'ISSUED', 'SETTLED', 'CANCELLED'
+    )),
+    CONSTRAINT fk_contract_cash_call_contract FOREIGN KEY (contract_id)
+        REFERENCES contract (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_cash_call_contract
+    ON contract_cash_call (tenant_id, contract_id, created_at);
+
 -- Shared by the legacy ingest header and the period-bordereau lifecycle. The
 -- legacy columns are nullable because a period bordereau sets only the
 -- financial columns (and vice versa); `period_start IS NOT NULL` distinguishes

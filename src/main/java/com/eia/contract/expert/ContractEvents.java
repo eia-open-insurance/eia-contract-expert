@@ -2,6 +2,8 @@ package com.eia.contract.expert;
 
 import com.eia.contract.expert.bordereau.BordereauStatus;
 import com.eia.contract.expert.bordereau.ContractBordereau;
+import com.eia.contract.expert.cashcall.CashCallStatus;
+import com.eia.contract.expert.cashcall.ContractCashCall;
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
@@ -35,8 +37,9 @@ import java.util.UUID;
  * Technical accounts publish the brief's {@code contract.technical-account.*}
  * child-aggregate facts; the catalog only names {@code contract.account.issued}.
  * Period bordereaux publish the brief's {@code contract.bordereau.*} facts; the
- * catalog names the last two {@code .posted} and {@code .rejected}. The
- * mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
+ * catalog names the last two {@code .posted} and {@code .rejected}. Cash calls
+ * publish the brief's {@code contract.cash-call.*} child facts; the catalog has no
+ * cash-call event. The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
  *
  * <p>Contract is an ASSUMED-book-only vertical, so every envelope carries
  * {@code book=ASSUMED}. Contract rows start at version 0 for API compatibility
@@ -61,6 +64,10 @@ public final class ContractEvents {
     static final String BORDEREAU_RECEIVED = "contract.bordereau.received";
     static final String BORDEREAU_PROCESSED = "contract.bordereau.processed";
     static final String BORDEREAU_FAILED = "contract.bordereau.failed";
+    static final String CASH_CALL_REQUESTED = "contract.cash-call.requested";
+    static final String CASH_CALL_ISSUED = "contract.cash-call.issued";
+    static final String CASH_CALL_SETTLED = "contract.cash-call.settled";
+    static final String CASH_CALL_CANCELLED = "contract.cash-call.cancelled";
 
     private static final Book EVENT_BOOK = Book.ASSUMED;
     private static final String VERTICAL = "contract";
@@ -68,6 +75,7 @@ public final class ContractEvents {
     private static final String CESSION_AGGREGATE = "Cession";
     private static final String TECHNICAL_ACCOUNT_AGGREGATE = "TechnicalAccount";
     private static final String BORDEREAU_AGGREGATE = "Bordereau";
+    private static final String CASH_CALL_AGGREGATE = "CashCall";
     private static final String SOURCE_BUILD = "eia-contract-expert@0.1.0-SNAPSHOT";
 
     private ContractEvents() {
@@ -235,6 +243,78 @@ public final class ContractEvents {
     public static EventEnvelope bordereauFailed(
             Contract contract, ContractBordereau bordereau, Instant now) {
         return bordereauEnvelope(contract, bordereau, BORDEREAU_FAILED, now);
+    }
+
+    /**
+     * A cash call is a child aggregate: its own id and lifecycle version (1
+     * requested, 2 issued or cancelled, 3 settled), while the contract id stays
+     * the outbox partition key. The payload carries the contract and cash-call
+     * identity, the period as both a nested object and flat dates, the requested
+     * amount as a decimal string, the currency, the due date, and the status.
+     */
+    public static EventEnvelope cashCallRequested(
+            Contract contract, ContractCashCall cashCall, Instant now) {
+        return cashCallEnvelope(contract, cashCall, CASH_CALL_REQUESTED, now);
+    }
+
+    public static EventEnvelope cashCallIssued(
+            Contract contract, ContractCashCall cashCall, Instant now) {
+        return cashCallEnvelope(contract, cashCall, CASH_CALL_ISSUED, now);
+    }
+
+    public static EventEnvelope cashCallSettled(
+            Contract contract, ContractCashCall cashCall, Instant now) {
+        return cashCallEnvelope(contract, cashCall, CASH_CALL_SETTLED, now);
+    }
+
+    public static EventEnvelope cashCallCancelled(
+            Contract contract, ContractCashCall cashCall, Instant now) {
+        return cashCallEnvelope(contract, cashCall, CASH_CALL_CANCELLED, now);
+    }
+
+    private static EventEnvelope cashCallEnvelope(
+            Contract contract, ContractCashCall cashCall, String eventType, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("contractNumber", contract.contractNumber());
+        data.put("cashCallId", cashCall.id());
+        data.put("callNumber", cashCall.callNumber());
+
+        Map<String, Object> period = new LinkedHashMap<>();
+        period.put("start", date(cashCall.periodStart()));
+        period.put("end", date(cashCall.periodEnd()));
+        data.put("period", period);
+        data.put("periodStart", date(cashCall.periodStart()));
+        data.put("periodEnd", date(cashCall.periodEnd()));
+
+        data.put("amount", money(cashCall.amount()));
+        data.put("currency", cashCall.currency());
+        data.put("dueDate", date(cashCall.dueDate()));
+        data.put("status", cashCall.status());
+
+        long aggregateVersion = CashCallStatus.valueOf(cashCall.status()).eventVersion();
+        UUID eventId = EventIds.deterministic(contract.tenantId(), CASH_CALL_AGGREGATE,
+                cashCall.id(), aggregateVersion, eventType);
+        return EventEnvelope.builder()
+                .eventId(eventId)
+                .eventType(eventType)
+                .eventVersion(1)
+                .occurredAt(now)
+                .recordedAt(now)
+                .tenantId(contract.tenantId())
+                .book(EVENT_BOOK)
+                .vertical(VERTICAL)
+                .aggregateType(CASH_CALL_AGGREGATE)
+                .aggregateId(cashCall.id())
+                .aggregateVersion(aggregateVersion)
+                .sequence(0)
+                .actor(EventActor.system("eia-contract-expert"))
+                .subject(EventSubject.of(VERTICAL, "cash-call", cashCall.id(),
+                        cashCall.callNumber()))
+                .links(List.of())
+                .data(data)
+                .metadata(EventMetadata.v1(SOURCE_BUILD))
+                .build();
     }
 
     private static EventEnvelope bordereauEnvelope(

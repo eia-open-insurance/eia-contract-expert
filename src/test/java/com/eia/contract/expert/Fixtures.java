@@ -2,6 +2,7 @@ package com.eia.contract.expert;
 
 import com.eia.contract.expert.bordereau.ContractBordereau;
 import com.eia.contract.expert.bordereau.ContractBordereauHeader;
+import com.eia.contract.expert.cashcall.ContractCashCall;
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.layer.ContractLayer;
@@ -27,6 +28,7 @@ public final class Fixtures {
     public static final UUID DOCUMENT = UUID.fromString("77777777-7777-7777-8777-777777777777");
     public static final UUID ACCOUNT_ID = UUID.fromString("88888888-8888-7888-8888-888888888888");
     public static final UUID BORDEREAU_ID = UUID.fromString("99999999-9999-7999-8999-999999999998");
+    public static final UUID CASH_CALL_ID = UUID.fromString("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb");
     public static final Instant NOW = Instant.parse("2026-01-15T10:00:00Z");
     public static final LocalDate FROM = LocalDate.of(2026, 1, 1);
     public static final LocalDate TO = LocalDate.of(2026, 12, 31);
@@ -111,6 +113,13 @@ public final class Fixtures {
                 new BigDecimal("1000.0000"), new BigDecimal("400.0000"),
                 new BigDecimal("100.0000"), new BigDecimal("50.0000"),
                 new BigDecimal("550.0000"), status, NOW);
+    }
+
+    public static ContractCashCall cashCall(String status) {
+        return new ContractCashCall(CASH_CALL_ID, TENANT, CONTRACT_ID, "CC-2026-00001",
+                LocalDate.of(2026, 1, 1), LocalDate.of(2026, 3, 31),
+                new BigDecimal("250000.0000"), "USD", LocalDate.of(2026, 4, 15),
+                status, "Q1 cash call", NOW);
     }
 
     public static ContractCommutation commutation(String status, String type) {

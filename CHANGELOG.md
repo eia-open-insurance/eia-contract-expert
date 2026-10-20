@@ -9,21 +9,29 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 ### Added
 
 - `contract_layer`, `contract_participant`, `contract_term`, `contract_security`,
-  `contract_cession`, `contract_bordereau`, `contract_commutation`, and
-  `contract_technical_account` tables with idempotent DDL, check constraints,
-  unique keys, and foreign keys.
+  `contract_cession`, `contract_bordereau`, `contract_commutation`,
+  `contract_technical_account`, and `contract_cash_call` tables with idempotent
+  DDL, check constraints, unique keys, and foreign keys.
 - Internal APIs for layers (with a tower summary), participants, terms (with the
   required-terms view), security, cessions, bordereaux, commutations (propose,
   approve, execute), technical accounts (create, newest-period-first list,
   DRAFT -> ISSUED -> SETTLED status), bind eligibility, and bind. The technical
   account resource is also exposed at the brief's
   `/api/v1/contracts/{contractId}/technical-accounts` path.
+- Cash calls: `contract_cash_call` with a generated `CC-{YEAR}-{SEQ}` number
+  unique per tenant and contract. The public
+  `GET/POST /api/v1/contracts/{id}/cash-calls` and
+  `PATCH .../{cashCallId}/status` endpoints request a cash call
+  (`REQUESTED`) and move it through `ISSUED -> SETTLED` or `CANCELLED`; terminal
+  statuses are immutable. Period, strictly positive amount, due date, and
+  currency are validated, and every transition writes its
+  `contract.cash-call.*` event through the transactional outbox.
 - Invariants: tower overlap (CTR-02), aggregate limit (CTR-03), shares total 100%
   (CTR-01), required terms by contract type, over-collateralisation approval,
   cession capacity (CTR-04) and source share (CTR-05), security breach block
   (CTR-11), commutation approval and release (CTR-12), contract currency
   (CTR-17), and the ASSUMED book wall.
-- Business-key generation (`CES`, `BRD`, `COM`, `TA`) and bind/commutation
+- Business-key generation (`CES`, `BRD`, `COM`, `TA`, `CC`) and bind/commutation
   timestamps.
 - Technical-account balance convention
   (`cededPremium - commission - cededLosses + otherCharges`): positive is due
@@ -47,12 +55,13 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   `outbox_event` DDL, `contract.contract.created`, `.updated`, `.bound`,
   `.signed`, `.endorsed`, `.expired`, `.cancelled`, `.commuted`,
   `contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
-  `.settled`, and `contract.bordereau.received`/`.processed`/`.failed`, written
-  in the aggregate transaction.
+  `.settled`, `contract.bordereau.received`/`.processed`/`.failed`, and
+  `contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, written in
+  the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 192 JUnit tests, including outbox payload, rollback, failure-atomicity,
-  bordereau lifecycle, and scheduling tests.
+- 223 JUnit tests, including outbox payload, rollback, failure-atomicity,
+  bordereau and cash-call lifecycle, and scheduling tests.
 
 ### Changed
 

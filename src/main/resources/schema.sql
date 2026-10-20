@@ -449,6 +449,40 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
 
+-- Cash calls: a request for a forward payment on a contract period. A cash call
+-- is a child aggregate of the contract; its call number is unique per tenant and
+-- contract. `amount` is strictly positive because a cash call always requests
+-- money, and the status path is REQUESTED -> ISSUED -> SETTLED or
+-- REQUESTED -> CANCELLED. The unique key, the period ordering, the positive
+-- amount, the currency shape, and the status domain are enforced here as well as
+-- by the API.
+CREATE TABLE IF NOT EXISTS contract_cash_call (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    contract_id UUID NOT NULL,
+    call_number VARCHAR(32) NOT NULL,
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
+    amount NUMERIC(19,4) NOT NULL,
+    currency CHAR(3) NOT NULL,
+    due_date DATE NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT uq_contract_cash_call_number UNIQUE (tenant_id, contract_id, call_number),
+    CONSTRAINT ck_contract_cash_call_period CHECK (period_start < period_end),
+    CONSTRAINT ck_contract_cash_call_amount CHECK (amount > 0),
+    CONSTRAINT ck_contract_cash_call_currency CHECK (currency ~ '^[A-Z]{3}$'),
+    CONSTRAINT ck_contract_cash_call_status CHECK (status IN (
+        'REQUESTED', 'ISSUED', 'SETTLED', 'CANCELLED'
+    )),
+    CONSTRAINT fk_contract_cash_call_contract FOREIGN KEY (contract_id)
+        REFERENCES contract (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_cash_call_contract
+    ON contract_cash_call (tenant_id, contract_id, created_at);
+
 -- Transactional outbox (SPEC 7.5.1). The canonical copy lives in
 -- eia-platform/libs/src/main/resources/db/outbox_event.sql; keep both in sync.
 -- The expert appends the event in the same transaction as the aggregate write,

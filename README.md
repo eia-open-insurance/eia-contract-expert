@@ -45,6 +45,14 @@ totals; processing it creates or reuses the technical account for the same
 contract period and links it. Both bordereau shapes share `contract_bordereau`,
 and `IMPLEMENTATION.md` records how they are kept apart.
 
+Cash calls have their own public API:
+`GET/POST /api/v1/contracts/{contractId}/cash-calls` and
+`PATCH /api/v1/contracts/{contractId}/cash-calls/{cashCallId}/status` (also under
+`/internal/v1`). A cash call is requested with a contract period, a strictly
+positive amount, a currency, and a due date; its generated call number (`CC`) is
+unique per tenant and contract. `REQUESTED` may become `ISSUED` or `CANCELLED`,
+and `ISSUED` may become `SETTLED`; terminal statuses are immutable.
+
 Bind is a guarded command with an approver; `PATCH /{id}/status` no longer accepts
 `BOUND`. Layer overlaps, share totals, required terms, over-collateralisation,
 cession capacity, security breach, and commutation approval are enforced here.
@@ -52,7 +60,8 @@ cession capacity, security breach, and commutation approval are enforced here.
 Every write also appends its canonical domain event to the transactional outbox
 (`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
 `contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
-`.settled`, `contract.bordereau.received`/`.processed`/`.failed`, and the catalog
+`.settled`, `contract.bordereau.received`/`.processed`/`.failed`,
+`contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, and the catalog
 lifecycle events). The rows are written in the same transaction; the Quartz
 dispatcher runs only when `eia.outbox.enabled=true`. `IMPLEMENTATION.md` records
 the invariants, schema decisions, event-name mismatches, and remaining SPEC gaps.
