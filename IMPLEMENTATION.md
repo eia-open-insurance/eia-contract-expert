@@ -18,10 +18,60 @@ what remains.
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
+| Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
 
 `PATCH /internal/v1/contracts/{id}/status` no longer accepts `BOUND`. Bind is a
 command (`POST .../bind`) because it needs the tower, share, term, security, and
 approval checks; the same rule is enforced in the domain service.
+
+## Transactional outbox
+
+The expert writes domain events through `com.eia.platform.libs.outbox` in the
+same transaction as the aggregate write:
+
+- `POST /internal/v1/contracts` -> `contract.contract.created`
+- `PATCH /internal/v1/contracts/{id}/status` -> `contract.contract.updated` plus
+  the catalog lifecycle event for the target status when one exists
+  (`contract.contract.signed`, `.endorsed`, `.expired`, `.cancelled`,
+  `.commuted`)
+- `POST /internal/v1/contracts/{id}/bind` -> `contract.contract.updated` and
+  `contract.contract.bound`
+- `POST /internal/v1/contracts/{id}/cessions` -> `contract.cession.recorded`
+  (the catalog name for the brief's `contract.contract.cession-added`)
+- `POST /internal/v1/contracts/{id}/commutations/{commutationId}/execute` ->
+  `contract.contract.updated` and `contract.contract.commuted`
+
+Contract events use `aggregateType=Contract`, `vertical=contract`,
+`book=ASSUMED`, and the outbox partition key is the contract id. The cession is
+a child aggregate, so `contract.cession.recorded` uses `aggregateType=Cession`
+and the cession id/version while keeping the contract id as the partition key.
+Rows start at version 0 for API compatibility, so the event
+`aggregateVersion` is the row version plus one. Event ids are deterministic
+(tenant + aggregate + version + type), making a retry idempotent.
+
+Payloads carry `contractId`, `contractNumber`, `contractType`, `status`,
+`version`, `cedentPartyId`, `reinsurerPartyId`, `currency`, `effectiveDate`,
+and `expirationDate`. The bind payload adds `boundAt`, `boundBy`, and
+`limitAmount`; the cession payload adds the cession identifiers, `cessionPct`,
+`cededPremiumAmount`, `cededLossAmount`, `contractLimitAmount`, and the source
+references; the commuted payload adds the commutation identifier, type, basis,
+`agreedAmount`, `savingsAmount`, dates, release document, `contractClosed`, and
+`releasedSecurities`. Money and percentages are decimal strings (SPEC 10.3).
+
+Event names are not all in the canonical catalog. The catalog has no generic
+`contract.contract.updated`, so the expert publishes that requested change fact
+as an additive name (EV-05 treats an added event as compatible) and also
+publishes the specific lifecycle fact. The brief's
+`contract.contract.cession-added` is published under the catalog's actual name,
+`contract.cession.recorded`.
+
+The `outbox_event` DDL is repeated in `schema.sql` using the canonical
+PostgreSQL definition from
+`eia-platform/libs/src/main/resources/db/outbox_event.sql`. Dispatch is
+conditional: `spring.quartz.auto-startup` and the
+`ContractOutboxSchedulingConfiguration` job are enabled only when
+`eia.outbox.enabled=true` (or `EIA_OUTBOX_ENABLED=true`). The outbox row is
+written even when dispatch is disabled, so no event is lost.
 
 ## Decisions and deviations
 
@@ -59,7 +109,15 @@ approval checks; the same rule is enforced in the domain service.
   `ParticipantControllerTest`, `ParticipantRulesTest`, `TermControllerTest`,
   `RequiredTermsTest`, `SecurityControllerTest`, `CessionControllerTest`,
   `BordereauControllerTest`, `CommutationControllerTest`, `BindControllerTest`,
-  `ContractStatusTest` — 121 tests, run with `./gradlew test`.
+  `ContractStatusTest`, `OutboxSchedulingEnabledTest`,
+  `OutboxSchedulingDisabledTest`, `ContractOutboxFailureRollbackTest`, and
+  `ContractOutboxIntegrationTest` — 135 tests, run with `./gradlew test`.
+- `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
+  cession, and commutation, the catalog lifecycle event for a status change, and
+  the rollback rule for every write (neither the row nor the event survives).
+  `ContractOutboxFailureRollbackTest` proves that an outbox append failure rolls
+  the contract INSERT back. `OutboxSchedulingEnabledTest`/`DisabledTest` prove
+  the Quartz job is created only when `eia.outbox.enabled=true`.
 - Live PostgreSQL evidence: `../eia-contract-domain/scripts/live-smoke.ps1`
   creates a contract, records two layers and three participations, proves the
   overlap and 100% rejections, binds, records a cession, proves the capacity
@@ -73,7 +131,9 @@ approval checks; the same rule is enforced in the domain service.
   `contract_mass_tort_profile`, and the `contract_loss_aggregate` projection.
 - Commands: endorse, renew, technical-account production, bordereau parsing and
   posting, reinstatement application, cash calls, loss-aggregate projection.
-- Events: no outbox, dispatcher, or subscriber; no event is published.
+- Outbox delivery has no subscriber, inbox, subscription registry, or gap
+  detection (SPEC 7.5.2-7.5.3); the dispatcher and Quartz schedule exist but no
+  event is consumed by another vertical.
 - Authority limits (SPEC 7.21.3) are represented only by the required `approvedBy`
   evidence on bind and commutation approval.
 - Reinsurance calculations and test vectors (SPEC 7.19), Schedule F and

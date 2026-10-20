@@ -7,6 +7,7 @@ import com.eia.contract.expert.participant.ParticipantRepository;
 import com.eia.contract.expert.security.ContractSecurity;
 import com.eia.contract.expert.security.SecurityRepository;
 import com.eia.contract.expert.term.TermRepository;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -61,6 +62,9 @@ class BindControllerTest {
 
     @MockitoBean
     private SecurityRepository securities;
+
+    @MockitoBean
+    private OutboxRepository outbox;
 
     private void placedWithCompleteData() {
         when(contracts.findById(TENANT, CONTRACT_ID)).thenReturn(Optional.of(Fixtures.contract("PLACED", 2)));

@@ -32,8 +32,13 @@ terms, security, cessions, bordereaux, and commutations — under
 Bind is a guarded command with an approver; `PATCH /{id}/status` no longer accepts
 `BOUND`. Layer overlaps, share totals, required terms, over-collateralisation,
 cession capacity, security breach, and commutation approval are enforced here.
-`IMPLEMENTATION.md` records the invariants, schema decisions, and remaining SPEC
-gaps.
+
+Every write also appends its canonical domain event to the transactional outbox
+(`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
+`contract.cession.recorded`, and the catalog lifecycle events). The rows are
+written in the same transaction; the Quartz dispatcher runs only when
+`eia.outbox.enabled=true`. `IMPLEMENTATION.md` records the invariants, schema
+decisions, event-name mismatches, and remaining SPEC gaps.
 
 ## Responsibilities
 

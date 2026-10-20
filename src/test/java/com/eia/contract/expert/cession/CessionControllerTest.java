@@ -6,6 +6,7 @@ import com.eia.contract.expert.Fixtures;
 import com.eia.contract.expert.bordereau.BordereauRepository;
 import com.eia.contract.expert.layer.LayerRepository;
 import com.eia.contract.expert.security.SecurityRepository;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -58,6 +59,9 @@ class CessionControllerTest {
 
     @MockitoBean
     private BusinessKeys keys;
+
+    @MockitoBean
+    private OutboxRepository outbox;
 
     private void contractInStatus(String status) {
         when(contracts.findById(TENANT, CONTRACT_ID)).thenReturn(Optional.of(Fixtures.contract(status, 2)));

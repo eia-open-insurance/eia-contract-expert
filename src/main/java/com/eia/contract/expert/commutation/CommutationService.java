@@ -3,6 +3,7 @@ package com.eia.contract.expert.commutation;
 import com.eia.contract.expert.BusinessKeys;
 import com.eia.contract.expert.Contract;
 import com.eia.contract.expert.ContractConflictException;
+import com.eia.contract.expert.ContractEvents;
 import com.eia.contract.expert.ContractGuard;
 import com.eia.contract.expert.ContractNotFoundException;
 import com.eia.contract.expert.ContractRepository;
@@ -10,12 +11,16 @@ import com.eia.contract.expert.ContractStatus;
 import com.eia.contract.expert.ContractValidationException;
 import com.eia.contract.expert.Values;
 import com.eia.contract.expert.security.SecurityRepository;
+import com.eia.platform.libs.events.EventEnvelope;
+import com.eia.platform.libs.outbox.OutboxEvent;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -34,13 +39,16 @@ public class CommutationService {
     private final CommutationRepository commutations;
     private final SecurityRepository securities;
     private final BusinessKeys keys;
+    private final OutboxRepository outbox;
 
     public CommutationService(ContractRepository contracts, CommutationRepository commutations,
-                              SecurityRepository securities, BusinessKeys keys) {
+                              SecurityRepository securities, BusinessKeys keys,
+                              OutboxRepository outbox) {
         this.contracts = contracts;
         this.commutations = commutations;
         this.securities = securities;
         this.keys = keys;
+        this.outbox = outbox;
     }
 
     @Transactional
@@ -131,7 +139,15 @@ public class CommutationService {
         ContractStatus target = closes ? ContractStatus.CLOSED : ContractStatus.COMMUTED;
         Contract updated = contracts.applyCommutation(tenantId, contractId, target, now,
                 closes ? now : null, contract.version());
+        publish(ContractEvents.commutationExecuted(
+                contract, updated, executed, released, now));
         return new Execution(executed, updated, released, closes);
+    }
+
+    private void publish(List<EventEnvelope> events) {
+        for (EventEnvelope event : events) {
+            outbox.insert(OutboxEvent.fromEnvelope(event));
+        }
     }
 
     private Contract requireContract(UUID tenantId, UUID contractId) {

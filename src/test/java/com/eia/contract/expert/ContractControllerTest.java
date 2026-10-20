@@ -1,5 +1,6 @@
 package com.eia.contract.expert;
 
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -35,6 +36,9 @@ class ContractControllerTest {
 
     @MockitoBean
     private ContractRepository repository;
+
+    @MockitoBean
+    private OutboxRepository outbox;
 
     private static String createBody(String effectiveDate, String expirationDate) {
         return """

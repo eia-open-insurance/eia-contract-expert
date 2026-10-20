@@ -6,6 +6,7 @@ import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.ContractStatus;
 import com.eia.contract.expert.Fixtures;
 import com.eia.contract.expert.security.SecurityRepository;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -56,6 +57,9 @@ class CommutationControllerTest {
 
     @MockitoBean
     private BusinessKeys keys;
+
+    @MockitoBean
+    private OutboxRepository outbox;
 
     private static String body(String type) {
         return """

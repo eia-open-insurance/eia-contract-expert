@@ -2,6 +2,7 @@ package com.eia.contract.expert.cession;
 
 import com.eia.contract.expert.BusinessKeys;
 import com.eia.contract.expert.Contract;
+import com.eia.contract.expert.ContractEvents;
 import com.eia.contract.expert.ContractGuard;
 import com.eia.contract.expert.ContractNotFoundException;
 import com.eia.contract.expert.ContractRepository;
@@ -11,7 +12,10 @@ import com.eia.contract.expert.layer.ContractLayer;
 import com.eia.contract.expert.layer.LayerRepository;
 import com.eia.contract.expert.security.SecurityRepository;
 import com.eia.contract.expert.security.SecurityRules;
+import com.eia.platform.libs.outbox.OutboxEvent;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.springframework.http.HttpStatus;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -22,6 +26,7 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
@@ -37,16 +42,19 @@ public class CessionController {
     private final SecurityRepository securities;
     private final BordereauRepository bordereaux;
     private final BusinessKeys keys;
+    private final OutboxRepository outbox;
 
     public CessionController(ContractRepository contracts, CessionRepository cessions,
                              LayerRepository layers, SecurityRepository securities,
-                             BordereauRepository bordereaux, BusinessKeys keys) {
+                             BordereauRepository bordereaux, BusinessKeys keys,
+                             OutboxRepository outbox) {
         this.contracts = contracts;
         this.cessions = cessions;
         this.layers = layers;
         this.securities = securities;
         this.bordereaux = bordereaux;
         this.keys = keys;
+        this.outbox = outbox;
     }
 
     @GetMapping
@@ -57,6 +65,7 @@ public class CessionController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
+    @Transactional
     public ContractCession create(@RequestParam UUID tenantId,
                                   @PathVariable UUID contractId,
                                   @RequestBody CreateCessionRequest request) {
@@ -80,7 +89,14 @@ public class CessionController {
         BigDecimal existingShare = cessions.activeShareForSource(tenantId, contractId,
                 cession.sourceType(), cession.policyRef(), cession.claimRef(), cession.treatyYear());
         CessionRules.checkSourceShare(existingShare, cession.cessionPct());
-        return cessions.create(cession);
+        ContractCession created = cessions.create(cession);
+        BigDecimal contractLimit = live.isEmpty() ? null : live.stream()
+                .map(ContractLayer::capacity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        outbox.insert(OutboxEvent.fromEnvelope(
+                ContractEvents.cessionRecorded(contract, created, contractLimit, Instant.now()),
+                contract.id().toString()));
+        return created;
     }
 
     private Contract requireContract(UUID tenantId, UUID contractId) {

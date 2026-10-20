@@ -2,6 +2,7 @@ package com.eia.contract.expert.bind;
 
 import com.eia.contract.expert.Contract;
 import com.eia.contract.expert.ContractConflictException;
+import com.eia.contract.expert.ContractEvents;
 import com.eia.contract.expert.ContractNotFoundException;
 import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.ContractValidationException;
@@ -17,10 +18,14 @@ import com.eia.contract.expert.security.SecurityRules;
 import com.eia.contract.expert.term.RequiredTerms;
 import com.eia.contract.expert.term.TermCode;
 import com.eia.contract.expert.term.TermRepository;
+import com.eia.platform.libs.events.EventEnvelope;
+import com.eia.platform.libs.outbox.OutboxEvent;
+import com.eia.platform.libs.outbox.OutboxRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -45,15 +50,17 @@ public class ContractBindService {
     private final ParticipantRepository participants;
     private final TermRepository terms;
     private final SecurityRepository securities;
+    private final OutboxRepository outbox;
 
     public ContractBindService(ContractRepository contracts, LayerRepository layers,
                                ParticipantRepository participants, TermRepository terms,
-                               SecurityRepository securities) {
+                               SecurityRepository securities, OutboxRepository outbox) {
         this.contracts = contracts;
         this.layers = layers;
         this.participants = participants;
         this.terms = terms;
         this.securities = securities;
+        this.outbox = outbox;
     }
 
     @Transactional(readOnly = true)
@@ -79,7 +86,15 @@ public class ContractBindService {
             throw new BindPreconditionFailedException(contractId, contract.status(), failed);
         }
         Contract bound = contracts.bind(tenantId, contractId, approvedBy, expectedVersion);
+        publish(ContractEvents.statusChanged(
+                contract, bound, layers.capacity(tenantId, contractId), Instant.now()));
         return new BindResult(bound, eligibility);
+    }
+
+    private void publish(List<EventEnvelope> events) {
+        for (EventEnvelope event : events) {
+            outbox.insert(OutboxEvent.fromEnvelope(event));
+        }
     }
 
     private BindEligibility evaluate(Contract contract) {

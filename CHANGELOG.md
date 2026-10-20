@@ -21,7 +21,14 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   (CTR-17), and the ASSUMED book wall.
 - Business-key generation (`CES`, `BRD`, `COM`) and bind/commutation timestamps.
 - Bind is a command with an approver; `PATCH /status` no longer accepts `BOUND`.
-- 121 JUnit tests.
+- Transactional outbox production through `com.eia.platform.libs.outbox`:
+  `outbox_event` DDL, `contract.contract.created`, `.updated`, `.bound`,
+  `.signed`, `.endorsed`, `.expired`, `.cancelled`, `.commuted`, and
+  `contract.cession.recorded`, written in the aggregate transaction.
+- Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
+  the `eia.outbox` configuration block.
+- 135 JUnit tests, including outbox payload, rollback, failure-atomicity, and
+  scheduling tests.
 
 ### Changed
 
