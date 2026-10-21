@@ -268,6 +268,27 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
 
+-- Line detail for a technical account (H2 mirror of the PostgreSQL table).
+CREATE TABLE IF NOT EXISTS contract_technical_account_line (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    account_id UUID NOT NULL,
+    line_type VARCHAR(16) NOT NULL,
+    reference VARCHAR(64),
+    description VARCHAR(255),
+    amount NUMERIC(19,4) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT ck_contract_technical_account_line_type CHECK (line_type IN (
+        'PREMIUM', 'LOSS', 'COMMISSION', 'OTHER'
+    )),
+    CONSTRAINT ck_contract_technical_account_line_amount CHECK (amount > 0),
+    CONSTRAINT fk_contract_technical_account_line_account FOREIGN KEY (account_id)
+        REFERENCES contract_technical_account (id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS ix_contract_technical_account_line_account
+    ON contract_technical_account_line (tenant_id, account_id, created_at);
+
 -- Cash calls. H2 has no PostgreSQL regex operator, so the currency shape is
 -- enforced only by the API here; the status, period, and positive-amount checks
 -- mirror the PostgreSQL schema.

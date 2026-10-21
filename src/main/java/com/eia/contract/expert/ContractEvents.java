@@ -9,6 +9,7 @@ import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.security.ContractSecurity;
 import com.eia.contract.expert.security.SecurityRules;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
+import com.eia.contract.expert.technicalaccount.ContractTechnicalAccountLine;
 import com.eia.contract.expert.technicalaccount.TechnicalAccountStatus;
 import com.eia.platform.libs.events.Book;
 import com.eia.platform.libs.events.EventActor;
@@ -37,7 +38,9 @@ import java.util.UUID;
  * event, that canonical event as well. {@code contract.contract.cession-added}
  * from the task brief maps to the catalog name {@code contract.cession.recorded}.
  * Technical accounts publish the brief's {@code contract.technical-account.*}
- * child-aggregate facts; the catalog only names {@code contract.account.issued}.
+ * child-aggregate facts, including the line detail facts
+ * {@code contract.technical-account.line-added} and {@code .line-removed}; the
+ * catalog only names {@code contract.account.issued}.
  * Period bordereaux publish the brief's {@code contract.bordereau.*} facts; the
  * catalog names the last two {@code .posted} and {@code .rejected}. Cash calls
  * publish the brief's {@code contract.cash-call.*} child facts; the catalog has no
@@ -66,6 +69,8 @@ public final class ContractEvents {
     static final String TECHNICAL_ACCOUNT_CREATED = "contract.technical-account.created";
     static final String TECHNICAL_ACCOUNT_ISSUED = "contract.technical-account.issued";
     static final String TECHNICAL_ACCOUNT_SETTLED = "contract.technical-account.settled";
+    static final String TECHNICAL_ACCOUNT_LINE_ADDED = "contract.technical-account.line-added";
+    static final String TECHNICAL_ACCOUNT_LINE_REMOVED = "contract.technical-account.line-removed";
     static final String BORDEREAU_RECEIVED = "contract.bordereau.received";
     static final String BORDEREAU_PROCESSED = "contract.bordereau.processed";
     static final String BORDEREAU_FAILED = "contract.bordereau.failed";
@@ -81,6 +86,7 @@ public final class ContractEvents {
     private static final String CONTRACT_AGGREGATE = "Contract";
     private static final String CESSION_AGGREGATE = "Cession";
     private static final String TECHNICAL_ACCOUNT_AGGREGATE = "TechnicalAccount";
+    private static final String TECHNICAL_ACCOUNT_LINE_AGGREGATE = "TechnicalAccountLine";
     private static final String BORDEREAU_AGGREGATE = "Bordereau";
     private static final String CASH_CALL_AGGREGATE = "CashCall";
     private static final String SECURITY_AGGREGATE = "Security";
@@ -229,6 +235,27 @@ public final class ContractEvents {
     public static EventEnvelope technicalAccountSettled(
             Contract contract, ContractTechnicalAccount account, Instant now) {
         return technicalAccountEnvelope(contract, account, TECHNICAL_ACCOUNT_SETTLED, now);
+    }
+
+    /**
+     * A line is a grandchild fact of the contract: its own aggregate id and
+     * version 1, still partitioned by the contract id. The payload is exactly
+     * the contract/account/line identity, the line type, and the amount as a
+     * decimal string. The two line event types use the same aggregate version,
+     * which the outbox key allows because the event type is part of the key.
+     */
+    public static EventEnvelope technicalAccountLineAdded(
+            Contract contract, ContractTechnicalAccount account,
+            ContractTechnicalAccountLine line, Instant now) {
+        return technicalAccountLineEnvelope(contract, account, line,
+                TECHNICAL_ACCOUNT_LINE_ADDED, now);
+    }
+
+    public static EventEnvelope technicalAccountLineRemoved(
+            Contract contract, ContractTechnicalAccount account,
+            ContractTechnicalAccountLine line, Instant now) {
+        return technicalAccountLineEnvelope(contract, account, line,
+                TECHNICAL_ACCOUNT_LINE_REMOVED, now);
     }
 
     /**
@@ -476,6 +503,40 @@ public final class ContractEvents {
                 .actor(EventActor.system("eia-contract-expert"))
                 .subject(EventSubject.of(VERTICAL, "technical-account", account.id(),
                         account.accountNumber()))
+                .links(List.of())
+                .data(data)
+                .metadata(EventMetadata.v1(SOURCE_BUILD))
+                .build();
+    }
+
+    private static EventEnvelope technicalAccountLineEnvelope(
+            Contract contract, ContractTechnicalAccount account,
+            ContractTechnicalAccountLine line, String eventType, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("accountId", account.id());
+        data.put("lineId", line.id());
+        data.put("lineType", line.lineType().name());
+        data.put("amount", money(line.amount()));
+
+        long aggregateVersion = 1L;
+        UUID eventId = EventIds.deterministic(contract.tenantId(),
+                TECHNICAL_ACCOUNT_LINE_AGGREGATE, line.id(), aggregateVersion, eventType);
+        return EventEnvelope.builder()
+                .eventId(eventId)
+                .eventType(eventType)
+                .eventVersion(1)
+                .occurredAt(now)
+                .recordedAt(now)
+                .tenantId(contract.tenantId())
+                .book(EVENT_BOOK)
+                .vertical(VERTICAL)
+                .aggregateType(TECHNICAL_ACCOUNT_LINE_AGGREGATE)
+                .aggregateId(line.id())
+                .aggregateVersion(aggregateVersion)
+                .sequence(0)
+                .actor(EventActor.system("eia-contract-expert"))
+                .subject(EventSubject.of(VERTICAL, "technical-account-line", line.id(), null))
                 .links(List.of())
                 .data(data)
                 .metadata(EventMetadata.v1(SOURCE_BUILD))

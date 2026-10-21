@@ -10,8 +10,9 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
 
 - `contract_layer`, `contract_participant`, `contract_term`, `contract_security`,
   `contract_cession`, `contract_bordereau`, `contract_commutation`,
-  `contract_technical_account`, and `contract_cash_call` tables with idempotent
-  DDL, check constraints, unique keys, and foreign keys.
+  `contract_technical_account`, `contract_technical_account_line`, and
+  `contract_cash_call` tables with idempotent DDL, check constraints, unique
+  keys, and foreign keys.
 - Internal APIs for layers (with a tower summary), participants, terms (with the
   required-terms view), security, cessions, bordereaux, commutations (propose,
   approve, execute), technical accounts (create, newest-period-first list,
@@ -48,6 +49,19 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   (CTR-17), and the ASSUMED book wall.
 - Business-key generation (`CES`, `BRD`, `COM`, `TA`, `CC`) and bind/commutation
   timestamps.
+- Technical-account line detail: `contract_technical_account_line` stores
+  `PREMIUM`, `LOSS`, `COMMISSION`, and `OTHER` lines with an optional reference
+  and description and a strictly positive amount
+  (`numeric(19,4)`). The public
+  `GET/POST /api/v1/contracts/{contractId}/technical-accounts/{accountId}/lines`
+  endpoints list the lines with per-type totals and add a line (201);
+  `DELETE .../{lineId}` removes one (204). Both mutations are DRAFT-only
+  (409 `ACCOUNT_NOT_EDITABLE`) and write
+  `contract.technical-account.line-added`/`.line-removed` through the
+  transactional outbox. Issuing an account that has lines reconciles each
+  line-type total to its header component and rejects a mismatch with 409
+  `ACCOUNT_LINES_DO_NOT_RECONCILE` and per-type detail; an account with no lines
+  keeps the legacy header-only issue path.
 - Technical-account balance convention
   (`cededPremium - commission - cededLosses + otherCharges`): positive is due
   from the cedent to the reinsurer. Periods are unique per tenant and contract;
@@ -70,13 +84,15 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   `outbox_event` DDL, `contract.contract.created`, `.updated`, `.bound`,
   `.signed`, `.endorsed`, `.expired`, `.cancelled`, `.commuted`,
   `contract.cession.recorded`, `contract.technical-account.created`/`.issued`/
-  `.settled`, `contract.bordereau.received`/`.processed`/`.failed`, and
+  `.settled`/`.line-added`/`.line-removed`,
+  `contract.bordereau.received`/`.processed`/`.failed`, and
   `contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, written in
   the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 266 JUnit tests, including outbox payload, rollback, failure-atomicity,
-  security lifecycle, bordereau and cash-call lifecycle, and scheduling tests.
+- 292 JUnit tests, including outbox payload, rollback, failure-atomicity,
+  security lifecycle, technical-account line reconciliation, bordereau and
+  cash-call lifecycle, and scheduling tests.
 
 ### Changed
 

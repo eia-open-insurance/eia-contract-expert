@@ -14,6 +14,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -60,6 +61,9 @@ class TechnicalAccountControllerTest {
 
     @MockitoBean
     private TechnicalAccountRepository accounts;
+
+    @MockitoBean
+    private TechnicalAccountLineRepository lines;
 
     @MockitoBean
     private BusinessKeys keys;
@@ -254,8 +258,62 @@ class TechnicalAccountControllerTest {
     }
 
     @Test
-    void settlesIssuedAccountAndWritesSettledEvent() throws Exception {
+    void issuesDraftAccountWhenLineTotalsReconcile() throws Exception {
         contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
+        when(lines.totals(TENANT, ACCOUNT_ID)).thenReturn(List.of(
+                new TechnicalAccountLineRepository.LineTotal(
+                        "PREMIUM", new BigDecimal("1000.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "LOSS", new BigDecimal("400.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "COMMISSION", new BigDecimal("100.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "OTHER", new BigDecimal("50.0000"))));
+        when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED))
+                .thenReturn(Fixtures.technicalAccount("ISSUED"));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"ISSUED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ISSUED"));
+
+        verify(outbox).insert(any(OutboxEvent.class));
+    }
+
+    @Test
+    void rejectsIssueWhenLineTotalsDoNotReconcileWithPerTypeDetail() throws Exception {
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
+        when(lines.totals(TENANT, ACCOUNT_ID)).thenReturn(List.of(
+                new TechnicalAccountLineRepository.LineTotal(
+                        "PREMIUM", new BigDecimal("900.0000"))));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"ISSUED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("ACCOUNT_LINES_DO_NOT_RECONCILE"))
+                .andExpect(jsonPath("$.details.length()").value(4))
+                .andExpect(jsonPath("$.details[0].field").value("PREMIUM"))
+                .andExpect(jsonPath("$.details[0].message")
+                        .value("PREMIUM lines total 900.0000 but cededPremium is 1000.0000"))
+                .andExpect(jsonPath("$.details[1].field").value("LOSS"))
+                .andExpect(jsonPath("$.details[2].field").value("COMMISSION"))
+                .andExpect(jsonPath("$.details[3].field").value("OTHER"));
+
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void settlesIssuedAccountAndWritesSettledEvent() throws Exception {        contractExists();
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,

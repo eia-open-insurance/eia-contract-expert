@@ -64,6 +64,7 @@ class TechnicalAccountOutboxIntegrationTest {
     void clean() {
         transaction = new TransactionTemplate(transactionManager);
         jdbc.update("DELETE FROM outbox_event");
+        jdbc.update("DELETE FROM contract_technical_account_line");
         jdbc.update("DELETE FROM contract_technical_account");
         jdbc.update("DELETE FROM contract_commutation");
         jdbc.update("DELETE FROM contract_cession");

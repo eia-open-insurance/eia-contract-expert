@@ -432,10 +432,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_commutation_executed
     ON contract_commutation (tenant_id, contract_id) WHERE status = 'EXECUTED';
 
 -- SPEC 11.3.4 `technical_account`: the periodic account for one contract
--- period. The brief's table and column names are kept; SPEC's separate
--- `technical_account_line` breakdown is not part of this slice. `balance` is
--- derived at creation time as ceded_premium - commission - ceded_losses
--- + other_charges, so a positive value is due from the cedent to the reinsurer.
+-- period. The brief's table and column names are kept. `balance` is derived at
+-- creation time as ceded_premium - commission - ceded_losses + other_charges,
+-- so a positive value is due from the cedent to the reinsurer. The SPEC line
+-- breakdown is implemented by `contract_technical_account_line` below with the
+-- brief's reduced line-type domain (PREMIUM, LOSS, COMMISSION, OTHER).
 CREATE TABLE IF NOT EXISTS contract_technical_account (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -464,6 +465,34 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
+
+-- Line detail for a technical account. Each line belongs to exactly one
+-- account; deleting the account removes its lines. The line type is the
+-- brief's reduced domain, and `amount` is strictly positive because a line
+-- states an amount owed in its component. The account header stays the
+-- reconciled view: on DRAFT -> ISSUED every component total must equal the
+-- matching header amount, so the line table is the audit detail behind it.
+CREATE TABLE IF NOT EXISTS contract_technical_account_line (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    account_id UUID NOT NULL,
+    line_type VARCHAR(16) NOT NULL,
+    reference VARCHAR(64),
+    description VARCHAR(255),
+    amount NUMERIC(19,4) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    CONSTRAINT ck_contract_technical_account_line_type CHECK (line_type IN (
+        'PREMIUM', 'LOSS', 'COMMISSION', 'OTHER'
+    )),
+    CONSTRAINT ck_contract_technical_account_line_amount CHECK (amount > 0),
+    CONSTRAINT fk_contract_technical_account_line_account FOREIGN KEY (account_id)
+        REFERENCES contract_technical_account (id) ON DELETE CASCADE
+);
+
+-- The account view reads all lines of one account in insertion order; tenant is
+-- in the key so the contract wall is an index lookup too.
+CREATE INDEX IF NOT EXISTS ix_contract_technical_account_line_account
+    ON contract_technical_account_line (tenant_id, account_id, created_at);
 
 -- Cash calls: a request for a forward payment on a contract period. A cash call
 -- is a child aggregate of the contract; its call number is unique per tenant and

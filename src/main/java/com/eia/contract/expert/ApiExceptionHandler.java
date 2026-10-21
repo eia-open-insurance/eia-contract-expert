@@ -2,6 +2,7 @@ package com.eia.contract.expert;
 
 import com.eia.contract.expert.bind.BindCheck;
 import com.eia.contract.expert.bind.BindPreconditionFailedException;
+import com.eia.contract.expert.technicalaccount.TechnicalAccountLinesDoNotReconcileException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -67,6 +68,14 @@ public class ApiExceptionHandler {
                 .map(BindCheck::detail)
                 .findFirst()
                 .orElse(code);
+    }
+
+    /** A line reconciliation failure reports every mismatched type at once. */
+    @ExceptionHandler(TechnicalAccountLinesDoNotReconcileException.class)
+    public ResponseEntity<ApiError> linesDoNotReconcile(
+            TechnicalAccountLinesDoNotReconcileException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiError(ex.code(), ex.getMessage(), ex.mismatches()));
     }
 
     @ExceptionHandler(ContractConflictException.class)

@@ -29,13 +29,24 @@ under `/internal/v1/contracts`:
 - `GET/POST /{id}/commutations`, `POST /{id}/commutations/{commutationId}/approve`,
   `POST /{id}/commutations/{commutationId}/execute`
 - `GET/POST /{id}/technical-accounts`,
-  `PATCH /{id}/technical-accounts/{accountId}/status`
+  `PATCH /{id}/technical-accounts/{accountId}/status`,
+  `GET/POST /{id}/technical-accounts/{accountId}/lines`,
+  `DELETE /{id}/technical-accounts/{accountId}/lines/{lineId}`
 - `GET /{id}/bind-eligibility`, `POST /{id}/bind`
 
 The technical-account endpoints are also exposed under the brief's public path,
 `/api/v1/contracts/{contractId}/technical-accounts`; both prefixes use the same
-controller and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
+controllers and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
 query parameter.
+
+A technical account carries line detail behind its header: the lines endpoint
+lists the lines with per-type totals, adds a line, and removes one. Lines can
+only be changed while the account is `DRAFT` (409 `ACCOUNT_NOT_EDITABLE`).
+Issuing an account that has any lines requires each line-type total to equal its
+header component (`PREMIUM` = ceded premium, `LOSS` = ceded losses,
+`COMMISSION` = commission, `OTHER` = other charges); otherwise the transition is
+rejected with 409 `ACCOUNT_LINES_DO_NOT_RECONCILE` and the per-type mismatch
+detail. An account with no lines keeps the legacy header-only issue path.
 
 Security/collateral has a public API:
 `GET/POST /api/v1/contracts/{contractId}/security` and
@@ -74,7 +85,8 @@ Every write also appends its canonical domain event to the transactional outbox
 (`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
 `contract.cession.recorded`, `contract.security.recorded`,
 `contract.security.status-changed`,
-`contract.technical-account.created`/`.issued`/`.settled`,
+`contract.technical-account.created`/`.issued`/`.settled`/`.line-added`/
+`.line-removed`,
 `contract.bordereau.received`/`.processed`/`.failed`,
 `contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, and the catalog
 lifecycle events). The rows are written in the same transaction; the Quartz

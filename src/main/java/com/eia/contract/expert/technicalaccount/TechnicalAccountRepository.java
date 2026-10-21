@@ -104,6 +104,24 @@ public class TechnicalAccountRepository {
     }
 
     /**
+     * Locks the account row for the caller's transaction so a line mutation and
+     * the DRAFT -> ISSUED reconciliation cannot interleave: the issue path reads
+     * the totals and writes the status while no line write can commit in
+     * between. A missing row is reported as 404.
+     */
+    public void lockById(UUID tenantId, UUID contractId, UUID id) {
+        List<UUID> locked = jdbc.query("""
+                SELECT id
+                  FROM contract_technical_account
+                 WHERE tenant_id = ? AND contract_id = ? AND id = ?
+                   FOR UPDATE
+                """, (rs, rowNum) -> rs.getObject("id", UUID.class), tenantId, contractId, id);
+        if (locked.isEmpty()) {
+            throw new ResourceNotFoundException("Technical account", id);
+        }
+    }
+
+    /**
      * Compares and sets the status so two concurrent transitions cannot both win.
      * A zero-row update means the account disappeared or another request already
      * moved it; both are reported as a 404 or a 409 by the controller.

@@ -9,6 +9,8 @@ import com.eia.contract.expert.layer.ContractLayer;
 import com.eia.contract.expert.participant.ContractParticipant;
 import com.eia.contract.expert.security.ContractSecurity;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
+import com.eia.contract.expert.technicalaccount.ContractTechnicalAccountLine;
+import com.eia.contract.expert.technicalaccount.TechnicalAccountLineType;
 import com.eia.contract.expert.term.ContractTerm;
 
 import java.math.BigDecimal;
@@ -27,6 +29,7 @@ public final class Fixtures {
     public static final UUID APPROVER = UUID.fromString("66666666-6666-7666-8666-666666666666");
     public static final UUID DOCUMENT = UUID.fromString("77777777-7777-7777-8777-777777777777");
     public static final UUID ACCOUNT_ID = UUID.fromString("88888888-8888-7888-8888-888888888888");
+    public static final UUID LINE_ID = UUID.fromString("aaaaaaaa-aaaa-7aaa-8aaa-aaaaaaaaaaaa");
     public static final UUID BORDEREAU_ID = UUID.fromString("99999999-9999-7999-8999-999999999998");
     public static final UUID CASH_CALL_ID = UUID.fromString("bbbbbbbb-bbbb-7bbb-8bbb-bbbbbbbbbbbb");
     public static final Instant NOW = Instant.parse("2026-01-15T10:00:00Z");
@@ -113,6 +116,17 @@ public final class Fixtures {
                 new BigDecimal("1000.0000"), new BigDecimal("400.0000"),
                 new BigDecimal("100.0000"), new BigDecimal("50.0000"),
                 new BigDecimal("550.0000"), status, NOW);
+    }
+
+    public static ContractTechnicalAccountLine technicalAccountLine(String lineType, String amount) {
+        return technicalAccountLine(LINE_ID, lineType, amount);
+    }
+
+    public static ContractTechnicalAccountLine technicalAccountLine(
+            UUID id, String lineType, String amount) {
+        return new ContractTechnicalAccountLine(id, TENANT, ACCOUNT_ID,
+                TechnicalAccountLineType.valueOf(lineType), "REF-2026-0001", "Test line",
+                new BigDecimal(amount), NOW);
     }
 
     public static ContractCashCall cashCall(String status) {

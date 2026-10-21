@@ -18,7 +18,7 @@ what remains.
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
-| Technical accounts | `contract_technical_account`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
+| Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each line-type total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
 | Cash calls | `contract_cash_call`, `GET/POST /api/v1/contracts/{id}/cash-calls`, `PATCH .../{cashCallId}/status` | period start before end; amount strictly positive; due date required; three-letter currency; unique call number per tenant and contract; REQUESTED -> ISSUED -> SETTLED or REQUESTED -> CANCELLED; terminal statuses immutable; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
 | Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
@@ -47,6 +47,10 @@ same transaction as the aggregate write:
   `/internal/v1`) -> `contract.technical-account.created`
 - `PATCH .../technical-accounts/{accountId}/status` -> the matching
   `contract.technical-account.issued` or `.settled` event
+- `POST .../technical-accounts/{accountId}/lines` ->
+  `contract.technical-account.line-added`
+- `DELETE .../technical-accounts/{accountId}/lines/{lineId}` ->
+  `contract.technical-account.line-removed`
 - `POST /api/v1/contracts/{contractId}/bordereaux` ->
   `contract.bordereau.received`
 - `PATCH .../bordereaux/{bordereauId}/status` -> `contract.bordereau.processed`
@@ -67,7 +71,10 @@ a child aggregate, so `contract.cession.recorded` uses `aggregateType=Cession`
 and the cession id/version while keeping the contract id as the partition key.
 A technical account is also a child aggregate: `aggregateType=TechnicalAccount`,
 its own id, and the lifecycle version 1 (DRAFT), 2 (ISSUED), or 3 (SETTLED),
-still partitioned by the contract id. A cash call is a child aggregate too:
+still partitioned by the contract id. A technical-account line is a grandchild
+fact: `aggregateType=TechnicalAccountLine`, its own id, and version 1 for both
+the added and removed facts (the event type is part of the outbox key), still
+partitioned by the contract id. A cash call is a child aggregate too:
 `aggregateType=CashCall`, its own id, and the lifecycle version 1 (REQUESTED),
 2 (ISSUED or CANCELLED), or 3 (SETTLED), still partitioned by the contract id.
 A security record is a child aggregate with `aggregateType=Security`, its own id,
@@ -88,7 +95,9 @@ references; the commuted payload adds the commutation identifier, type, basis,
 `agreedAmount`, `savingsAmount`, dates, release document, `contractClosed`, and
 `releasedSecurities`. Technical-account payloads carry `contractId`,
 `contractNumber`, `accountId`, `accountNumber`, `periodStart`, `periodEnd`,
-`currency`, `balance`, and `status`. Period-bordereau payloads carry
+`currency`, `balance`, and `status`. Technical-account-line payloads carry
+`contractId`, `accountId`, `lineId`, `lineType`, and `amount`. Period-bordereau
+payloads carry
 `contractId`, `contractNumber`, `bordereauId`, `bordereauNumber`, `period` (a
 `start`/`end` object), `periodStart`, `periodEnd`, `currency`, `status`, the four
 declared amounts, `lineCount`, and — once linked — `technicalAccountId`. Cash-call
@@ -106,9 +115,10 @@ as an additive name (EV-05 treats an added event as compatible) and also
 publishes the specific lifecycle fact. The brief's
 `contract.contract.cession-added` is published under the catalog's actual name,
 `contract.cession.recorded`. The technical-account events keep the brief's
-`contract.technical-account.*` names; the catalog's only account event is the
-narrower `contract.account.issued`, so the three names are additive child facts
-rather than replacements for it. The period-bordereau events keep the brief's
+`contract.technical-account.*` names (create, issue, settle, plus the line
+added/removed facts); the catalog's only account event is the narrower
+`contract.account.issued`, so the five names are additive child facts rather
+than replacements for it. The period-bordereau events keep the brief's
 `contract.bordereau.received`/`.processed`/`.failed` names; the catalog names the
 last two facts `.posted` and `.rejected`, so the brief's names are additive. Cash
 calls keep the brief's `contract.cash-call.requested`/`.issued`/`.settled`/
@@ -136,22 +146,26 @@ written even when dispatch is disabled, so no event is lost.
   (`CEDING_COMMISSION_PCT`, `BROKERAGE_PCT`, `FUNDS_WITHHELD_PCT`, ...) and links
   each to a SPEC 11.3.5 clause code. The wide `contract_terms`,
   `contract_sliding_scale`, `contract_premium`, `contract_reinstatement`,
-  `contract_wording`, `contract_section`, `technical_account_line`, and
+  `contract_wording`, `contract_section`, and
   `contract_mass_tort_profile` are still gaps.
 - **Cession business references.** `contract_cession` stores `policy_ref` and
   `claim_ref` strings rather than SPEC `source_id` UUIDs, because Contract is an
   ASSUMED-book-only vertical with a hard wall against Policy and Direct Claims.
   `source_vertical` is constrained to `ASSUMED` in the database.
-- **`contract_technical_account` rather than SPEC `technical_account`.** The
-  brief names the table and a compact set of columns, so the slice implements
+- **`contract_technical_account` with a compact line table.** The brief names the
+  table and a compact set of header columns, so the slice implements
   `account_number`, the period, currency, ceded premium, ceded losses,
-  commission, other charges, and a derived balance without the SPEC
-  `technical_account_line` breakdown. The balance sign convention is
+  commission, other charges, and a derived balance. The SPEC line breakdown is
+  kept in `contract_technical_account_line` with the brief's reduced domain
+  (`PREMIUM`, `LOSS`, `COMMISSION`, `OTHER`); line CRUD is DRAFT-only, and
+  DRAFT -> ISSUED reconciles every line-type total to its header component when
+  any line exists (CTR-08), reporting all mismatches in one 409
+  `ACCOUNT_LINES_DO_NOT_RECONCILE`. An account with no lines remains issuable
+  for compatibility with header-only accounts. The balance sign convention is
   `cededPremium - commission - cededLosses + otherCharges`: positive is due from
   the cedent to the reinsurer. Only the exact `(tenant, contract, period)` key is
-  unique; SPEC CTR-07's fall-within-contract and non-overlap rules, the
-  `AGREED`/`DISPUTED`/`SUPERSEDED` states, and the line reconciliation (CTR-08)
-  remain gaps.
+  unique; SPEC CTR-07's fall-within-contract and non-overlap rules, the wider
+  SPEC line domain, and the `AGREED`/`DISPUTED`/`SUPERSEDED` states remain gaps.
 - **Technical-account API prefix and tenant.** The task brief addresses the
   resource at `/api/v1/contracts/{contractId}/technical-accounts`; the expert's
   other child slices are internal, so the controller maps both that path and
@@ -224,13 +238,15 @@ written even when dispatch is disabled, so no event is lost.
   `CessionControllerTest`,
   `BordereauHeaderControllerTest`, `BordereauControllerTest`,
   `CommutationControllerTest`, `BindControllerTest`,
-  `TechnicalAccountControllerTest`, `ContractStatusTest`,
+  `TechnicalAccountControllerTest`, `TechnicalAccountLineControllerTest`,
+  `ContractStatusTest`,
   `CashCallControllerTest`, `OutboxSchedulingEnabledTest`,
   `OutboxSchedulingDisabledTest`, `ContractOutboxFailureRollbackTest`,
   `ContractOutboxIntegrationTest`, `TechnicalAccountOutboxIntegrationTest`,
+  `TechnicalAccountLineOutboxIntegrationTest`,
   `BordereauOutboxIntegrationTest`, `CashCallOutboxIntegrationTest`,
   `ContractSecurityOutboxIntegrationTest`,
-  `ContractSecurityOutboxFailureRollbackTest` — 266 tests, run with
+  `ContractSecurityOutboxFailureRollbackTest` — 292 tests, run with
   `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
@@ -238,7 +254,12 @@ written even when dispatch is disabled, so no event is lost.
   `TechnicalAccountOutboxIntegrationTest` proves creation, newest-period-first
   listing, period uniqueness, DRAFT -> ISSUED -> SETTLED with the matching
   events, invalid transitions, the tenant/contract wall, and row/event/key
-  rollback. `BordereauOutboxIntegrationTest` proves period-bordereau creation,
+  rollback. `TechnicalAccountLineOutboxIntegrationTest` proves line add/list/
+  remove and per-type totals, the line-added and line-removed events, DRAFT-only
+  mutation, issue reconciliation success, mismatch and missing-component
+  rejection with per-type detail, header-only issue, validation, the
+  tenant/contract wall, and add/remove rollback.
+  `BordereauOutboxIntegrationTest` proves period-bordereau creation,
   newest-period-first listing, duplicate-period rejection, processing into a new
   or existing technical account, failure, invalid transitions, the
   tenant/contract wall, and create/process rollback with their events.
@@ -268,12 +289,12 @@ written even when dispatch is disabled, so no event is lost.
 
 - `contract_section`, `contract_version`, `contract_sliding_scale`,
   `contract_premium`, `contract_reinstatement`, `contract_wording`,
-  `technical_account_line`, `bordereau_line`/`bordereau_exception`,
+  `bordereau_line`/`bordereau_exception`,
   `contract_mass_tort_profile`, and the `contract_loss_aggregate` projection.
-- Technical accounts: line-level breakdown and reconciliation (CTR-08),
-  period-within-contract and non-overlap checks (CTR-07), the
-  `AGREED`/`DISPUTED`/`SUPERSEDED` states, approval/authority, and payment
-  settlement (`TECHNICAL_ACCOUNT_SETTLEMENT`).
+- Technical accounts: period-within-contract and non-overlap checks (CTR-07),
+  the wider SPEC line-type domain, the `AGREED`/`DISPUTED`/`SUPERSEDED` states,
+  approval/authority, and payment settlement
+  (`TECHNICAL_ACCOUNT_SETTLEMENT`).
 - Commands: endorse, renew, bordereau line parsing (the period-level post is
   implemented), reinstatement application, loss-aggregate projection.
 - Outbox delivery has no subscriber, inbox, subscription registry, or gap

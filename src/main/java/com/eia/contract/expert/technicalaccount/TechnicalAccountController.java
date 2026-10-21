@@ -40,7 +40,10 @@ import java.util.UUID;
  *
  * <p>Create and status changes append their event through the transactional
  * outbox in the same transaction as the row write. A rolled-back request leaves
- * neither the account nor the event behind.</p>
+ * neither the account nor the event behind. Issuing a DRAFT account also
+ * reconciles its line detail against the header: when any line exists, every
+ * line-type total must equal the matching header component, otherwise the
+ * transition is rejected with the per-type mismatch details.</p>
  */
 @RestController
 @RequestMapping({
@@ -53,15 +56,18 @@ public class TechnicalAccountController {
 
     private final ContractRepository contracts;
     private final TechnicalAccountRepository accounts;
+    private final TechnicalAccountLineRepository lines;
     private final BusinessKeys keys;
     private final OutboxRepository outbox;
 
     public TechnicalAccountController(ContractRepository contracts,
-                                     TechnicalAccountRepository accounts,
-                                     BusinessKeys keys,
-                                     OutboxRepository outbox) {
+                                      TechnicalAccountRepository accounts,
+                                      TechnicalAccountLineRepository lines,
+                                      BusinessKeys keys,
+                                      OutboxRepository outbox) {
         this.contracts = contracts;
         this.accounts = accounts;
+        this.lines = lines;
         this.keys = keys;
         this.outbox = outbox;
     }
@@ -130,6 +136,22 @@ public class TechnicalAccountController {
         TechnicalAccountStatus from = TechnicalAccountRules.currentStatus(current.status());
         TechnicalAccountStatus target = TechnicalAccountRules.parseTargetStatus(request.status());
         TechnicalAccountRules.validateTransition(from, target);
+        if (target == TechnicalAccountStatus.ISSUED) {
+            // Lock the account so a concurrent line add/remove cannot commit
+            // between reading the totals and writing ISSUED. Re-read and
+            // re-validate after the lock in case another transition won.
+            accounts.lockById(tenantId, contractId, accountId);
+            current = accounts.findById(tenantId, contractId, accountId)
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "Technical account", accountId));
+            from = TechnicalAccountRules.currentStatus(current.status());
+            TechnicalAccountRules.validateTransition(from, target);
+            // A header-only account (created before this slice or by a period
+            // bordereau) has no rows and stays issuable; any line detail must
+            // reconcile type by type before the statement becomes immutable.
+            TechnicalAccountLineRules.reconcile(current,
+                    lines.totals(tenantId, accountId));
+        }
 
         ContractTechnicalAccount updated = accounts.updateStatus(
                 tenantId, contractId, accountId, from, target);
