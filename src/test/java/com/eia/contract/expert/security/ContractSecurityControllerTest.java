@@ -1,5 +1,6 @@
 package com.eia.contract.expert.security;
 
+import com.eia.contract.expert.ContractConflictException;
 import com.eia.contract.expert.ContractRepository;
 import com.eia.contract.expert.Fixtures;
 import com.eia.platform.libs.outbox.OutboxEvent;
@@ -13,6 +14,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
@@ -24,10 +26,12 @@ import static com.eia.contract.expert.Fixtures.REINSURER;
 import static com.eia.contract.expert.Fixtures.TENANT;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -36,6 +40,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 class ContractSecurityControllerTest {
 
     private static final String PATH = "/api/v1/contracts/{contractId}/security";
+    private static final String STATUS_PATH = PATH + "/{securityId}/status";
     private static final UUID OTHER_TENANT =
             UUID.fromString("99999999-9999-7999-8999-999999999999");
     private static final LocalDate FUTURE = LocalDate.of(2030, 12, 31);
@@ -64,6 +69,17 @@ class ContractSecurityControllerTest {
                 new BigDecimal(required).setScale(4), new BigDecimal(held).setScale(4),
                 "USD", provider, null,
                 FROM, null, expiry, status, null, null, null, approvalRef, null);
+    }
+
+    /** Same row with a new lifecycle status, so the id and payload identity stay stable. */
+    private static ContractSecurity withStatus(ContractSecurity security, String status) {
+        return new ContractSecurity(security.id(), security.tenantId(), security.contractId(),
+                security.securityType(), security.requiredAmount(), security.heldAmount(),
+                security.currency(), security.providerPartyId(), security.beneficiaryPartyId(),
+                security.effectiveFrom(), security.effectiveTo(), security.expiryDate(), status,
+                security.collateralQuality(), security.documentId(), security.releaseConditions(),
+                security.approvalRef(), security.approvedAt(), security.createdAt(),
+                Instant.now());
     }
 
     private static String body(String securityType, String required, String held,
@@ -285,7 +301,15 @@ class ContractSecurityControllerTest {
                                 "\"USD\"", "")))
                 .andExpect(status().isNotFound());
 
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, UUID.randomUUID())
+                        .header("X-EIA-Tenant", OTHER_TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isNotFound());
+
         verify(securities, never()).create(any());
+        verify(securities, never()).findById(any(), any(), any());
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
@@ -318,5 +342,233 @@ class ContractSecurityControllerTest {
                 .andExpect(jsonPath("$.code").value("CONTRACT_LOCKED"));
 
         verify(securities, never()).create(any());
+    }
+
+    @Test
+    void releasesAnActiveSecurityAndWritesTheStatusChangedEvent() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity active = security("5000000", "4000000", "ACTIVE", REINSURER, FUTURE,
+                "APR-2026-0007");
+        when(securities.findById(TENANT, CONTRACT_ID, active.id()))
+                .thenReturn(Optional.of(active));
+        when(securities.updateStatus(any(), any(), any(), any(), any(), any()))
+                .thenReturn(withStatus(active, "RELEASED"));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, active.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"released\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id").value(active.id().toString()))
+                .andExpect(jsonPath("$.status").value("RELEASED"))
+                .andExpect(jsonPath("$.createdAt").exists());
+
+        verify(securities).updateStatus(eq(TENANT), eq(CONTRACT_ID), eq(active.id()),
+                eq(SecurityRules.SecurityStatus.ACTIVE),
+                eq(SecurityRules.SecurityStatus.RELEASED), any(Instant.class));
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.security.status-changed");
+        assertThat(event.getValue().aggregateType()).isEqualTo("Security");
+        assertThat(event.getValue().aggregateId()).isEqualTo(active.id());
+        assertThat(event.getValue().aggregateVersion()).isEqualTo(2L);
+        assertThat(event.getValue().partitionKey()).isEqualTo(CONTRACT_ID.toString());
+        assertThat(event.getValue().payload())
+                .contains("\"contractId\":\"" + CONTRACT_ID + "\"")
+                .contains("\"securityId\":\"" + active.id() + "\"")
+                .contains("\"securityType\":\"LETTER_OF_CREDIT\"")
+                .contains("\"previousStatus\":\"ACTIVE\"")
+                .contains("\"status\":\"RELEASED\"")
+                .doesNotContain("\"requiredAmount\"");
+    }
+
+    @Test
+    void expiresAnOutstandingSecurityAndWritesTheStatusChangedEvent() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity outstanding = security("5000000", "4000000", "OUTSTANDING", null,
+                FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, outstanding.id()))
+                .thenReturn(Optional.of(outstanding));
+        when(securities.updateStatus(any(), any(), any(), any(), any(), any()))
+                .thenReturn(withStatus(outstanding, "EXPIRED"));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, outstanding.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"EXPIRED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("EXPIRED"));
+
+        verify(securities).updateStatus(eq(TENANT), eq(CONTRACT_ID), eq(outstanding.id()),
+                eq(SecurityRules.SecurityStatus.OUTSTANDING),
+                eq(SecurityRules.SecurityStatus.EXPIRED), any(Instant.class));
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.security.status-changed");
+        assertThat(event.getValue().aggregateVersion()).isEqualTo(2L);
+        assertThat(event.getValue().payload())
+                .contains("\"previousStatus\":\"OUTSTANDING\"")
+                .contains("\"status\":\"EXPIRED\"");
+    }
+
+    @Test
+    void releasesAnExpiredSecurityAtTheLaterAggregateVersion() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity expired = security("1000000", "0", "EXPIRED", null, PAST, null);
+        when(securities.findById(TENANT, CONTRACT_ID, expired.id()))
+                .thenReturn(Optional.of(expired));
+        when(securities.updateStatus(any(), any(), any(), any(), any(), any()))
+                .thenReturn(withStatus(expired, "RELEASED"));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, expired.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("RELEASED"));
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.security.status-changed");
+        assertThat(event.getValue().aggregateVersion()).isEqualTo(3L);
+        assertThat(event.getValue().payload())
+                .contains("\"previousStatus\":\"EXPIRED\"")
+                .contains("\"status\":\"RELEASED\"");
+    }
+
+    @Test
+    void releasedIsTerminal() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity released = security("5000000", "4000000", "RELEASED", null, FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, released.id()))
+                .thenReturn(Optional.of(released));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, released.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"EXPIRED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, released.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsExpiringAnAlreadyExpiredSecurity() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity expired = security("1000000", "0", "EXPIRED", null, PAST, null);
+        when(securities.findById(TENANT, CONTRACT_ID, expired.id()))
+                .thenReturn(Optional.of(expired));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, expired.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"EXPIRED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsReleasingABreachedSecurity() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity breach = security("5000000", "0", "BREACH", null, FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, breach.id()))
+                .thenReturn(Optional.of(breach));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, breach.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsATargetOutsideTheSecurityLifecycle() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity active = security("5000000", "4000000", "ACTIVE", null, FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, active.id()))
+                .thenReturn(Optional.of(active));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, active.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"CANCELLED\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsAMissingTargetStatus() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity active = security("5000000", "4000000", "ACTIVE", null, FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, active.id()))
+                .thenReturn(Optional.of(active));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, active.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void returnsNotFoundForAnUnknownSecurity() throws Exception {
+        contractInStatus("BOUND");
+        UUID securityId = UUID.randomUUID();
+        when(securities.findById(TENANT, CONTRACT_ID, securityId)).thenReturn(Optional.empty());
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, securityId)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value("NOT_FOUND"));
+
+        verify(securities, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void surfacesAConcurrentStatusChangeAsConflict() throws Exception {
+        contractInStatus("BOUND");
+        ContractSecurity active = security("5000000", "4000000", "ACTIVE", null, FUTURE, null);
+        when(securities.findById(TENANT, CONTRACT_ID, active.id()))
+                .thenReturn(Optional.of(active));
+        when(securities.updateStatus(any(), any(), any(), any(), any(), any()))
+                .thenThrow(new ContractConflictException("INVALID_STATUS_TRANSITION",
+                        "Security status cannot move from EXPIRED to RELEASED"));
+
+        mvc.perform(patch(STATUS_PATH, CONTRACT_ID, active.id())
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"RELEASED\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
+
+        verify(outbox, never()).insert(any());
     }
 }

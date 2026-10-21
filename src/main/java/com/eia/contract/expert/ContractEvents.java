@@ -7,6 +7,7 @@ import com.eia.contract.expert.cashcall.ContractCashCall;
 import com.eia.contract.expert.cession.ContractCession;
 import com.eia.contract.expert.commutation.ContractCommutation;
 import com.eia.contract.expert.security.ContractSecurity;
+import com.eia.contract.expert.security.SecurityRules;
 import com.eia.contract.expert.technicalaccount.ContractTechnicalAccount;
 import com.eia.contract.expert.technicalaccount.TechnicalAccountStatus;
 import com.eia.platform.libs.events.Book;
@@ -41,8 +42,9 @@ import java.util.UUID;
  * catalog names the last two {@code .posted} and {@code .rejected}. Cash calls
  * publish the brief's {@code contract.cash-call.*} child facts; the catalog has no
  * cash-call event. Security/collateral publishes the brief's
- * {@code contract.security.recorded} child fact; the catalog has no security
- * event. The mismatches are recorded in {@code IMPLEMENTATION.md}.</p>
+ * {@code contract.security.recorded} and {@code contract.security.status-changed}
+ * child facts; the catalog has no security event. The mismatches are recorded in
+ * {@code IMPLEMENTATION.md}.</p>
  *
  * <p>Contract is an ASSUMED-book-only vertical, so every envelope carries
  * {@code book=ASSUMED}. Contract rows start at version 0 for API compatibility
@@ -72,6 +74,7 @@ public final class ContractEvents {
     static final String CASH_CALL_SETTLED = "contract.cash-call.settled";
     static final String CASH_CALL_CANCELLED = "contract.cash-call.cancelled";
     static final String SECURITY_RECORDED = "contract.security.recorded";
+    static final String SECURITY_STATUS_CHANGED = "contract.security.status-changed";
 
     private static final Book EVENT_BOOK = Book.ASSUMED;
     private static final String VERTICAL = "contract";
@@ -294,12 +297,41 @@ public final class ContractEvents {
         data.put("currency", security.currency());
         data.put("status", security.status());
 
-        long aggregateVersion = 1L;
+        return securityEnvelope(contract, security, SECURITY_RECORDED, 1L, data, now);
+    }
+
+    /**
+     * A security status action is a child-aggregate fact. The recorded fact is
+     * aggregate version 1, the first status change is version 2, and a release
+     * from {@code EXPIRED} is version 3, so two transitions of one record never
+     * claim the same aggregate version (the outbox key is aggregate + version +
+     * event type). The payload is exactly the contract/security identity, the
+     * security type, and the previous and new status.
+     */
+    public static EventEnvelope securityStatusChanged(
+            Contract contract, ContractSecurity security, String previousStatus, Instant now) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("contractId", contract.id());
+        data.put("securityId", security.id());
+        data.put("securityType", security.securityType());
+        data.put("previousStatus", previousStatus);
+        data.put("status", security.status());
+
+        long aggregateVersion = SecurityRules.SecurityStatus.EXPIRED.name().equals(previousStatus)
+                ? 3L
+                : 2L;
+        return securityEnvelope(contract, security, SECURITY_STATUS_CHANGED, aggregateVersion,
+                data, now);
+    }
+
+    private static EventEnvelope securityEnvelope(
+            Contract contract, ContractSecurity security, String eventType,
+            long aggregateVersion, Map<String, Object> data, Instant now) {
         UUID eventId = EventIds.deterministic(contract.tenantId(), SECURITY_AGGREGATE,
-                security.id(), aggregateVersion, SECURITY_RECORDED);
+                security.id(), aggregateVersion, eventType);
         return EventEnvelope.builder()
                 .eventId(eventId)
-                .eventType(SECURITY_RECORDED)
+                .eventType(eventType)
                 .eventVersion(1)
                 .occurredAt(now)
                 .recordedAt(now)

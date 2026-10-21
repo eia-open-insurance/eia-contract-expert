@@ -17,6 +17,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.UUID;
 
 import static com.eia.contract.expert.Fixtures.CEDENT;
 import static com.eia.contract.expert.Fixtures.FROM;
@@ -42,6 +43,9 @@ class ContractSecurityOutboxFailureRollbackTest {
 
     @Autowired
     private ContractRepository contracts;
+
+    @Autowired
+    private SecurityRepository securities;
 
     @Autowired
     private JdbcTemplate jdbc;
@@ -73,6 +77,36 @@ class ContractSecurityOutboxFailureRollbackTest {
 
         assertThat(count("contract_security")).isZero();
         assertThat(count("outbox_event")).isZero();
+    }
+
+    /**
+     * The status UPDATE happens before the outbox append; the failed append must
+     * roll the stored status and timestamp back to ACTIVE.
+     */
+    @Test
+    void failedOutboxInsertRollsBackTheStatusChange() {
+        Contract contract = contracts.create(new CreateContractRequest(
+                TENANT, "XOL-2026-00096", "EXCESS_OF_LOSS", CEDENT, REINSURER, FROM, TO,
+                "USD", null), ContractType.EXCESS_OF_LOSS, ContractStatus.DRAFT);
+        ContractSecurity active = securities.create(ContractSecurity.create(
+                TENANT, contract.id(), "LETTER_OF_CREDIT", new BigDecimal("5000000"),
+                new BigDecimal("4000000"), "USD", null, null, FROM, null,
+                LocalDate.now().plusDays(30), "ACTIVE", null, null, null, null, null));
+        when(outbox.insert(any(OutboxEvent.class)))
+                .thenThrow(new IllegalStateException("outbox unavailable"));
+
+        assertThatThrownBy(() -> controller.updateStatus(TENANT, null, contract.id(),
+                active.id(), new UpdateContractSecurityStatusRequest("RELEASED")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("outbox unavailable");
+
+        assertThat(status(active.id())).isEqualTo("ACTIVE");
+        assertThat(count("outbox_event")).isZero();
+    }
+
+    private String status(UUID securityId) {
+        return jdbc.queryForObject("SELECT status FROM contract_security WHERE id = ?",
+                String.class, securityId);
     }
 
     private int count(String table) {

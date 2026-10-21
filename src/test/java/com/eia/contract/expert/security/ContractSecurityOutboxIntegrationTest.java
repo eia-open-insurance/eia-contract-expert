@@ -6,6 +6,7 @@ import com.eia.contract.expert.ContractController;
 import com.eia.contract.expert.ContractNotFoundException;
 import com.eia.contract.expert.ContractValidationException;
 import com.eia.contract.expert.CreateContractRequest;
+import com.eia.contract.expert.ResourceNotFoundException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -16,6 +17,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.Map;
@@ -32,8 +34,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Proves the public collateral slice against the H2 schema: creation with the
  * derived ACTIVE/EXPIRED status, newest-first listing with exactly the public
- * fields, validation, the tenant/contract wall, the outbox event written in the
- * same transaction, and rollback.
+ * fields, validation, the tenant/contract wall, the status lifecycle
+ * (release/expire, release from EXPIRED, and the terminal RELEASED state), the
+ * outbox events written in the same transaction, and rollback.
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -213,6 +216,125 @@ class ContractSecurityOutboxIntegrationTest {
         assertThat(security.list(TENANT, null, contract.id())).isEmpty();
     }
 
+    @Test
+    void releasesAnActiveSecurityStampsUpdatedAtAndPublishesTheStatusChangedEvent() throws Exception {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView active = create(contract, request("LETTER_OF_CREDIT",
+                "5000000", "4000000", "USD", REINSURER, LocalDate.now().plusDays(30),
+                "APR-2026-0007"));
+        Instant before = updatedAt(active.id());
+
+        Thread.sleep(20);
+        ContractSecurityView released = changeStatus(contract, active.id(), "RELEASED");
+
+        assertThat(released.id()).isEqualTo(active.id());
+        assertThat(released.status()).isEqualTo("RELEASED");
+        assertThat(statusOf(active.id())).isEqualTo("RELEASED");
+        assertThat(updatedAt(active.id())).isAfter(before);
+
+        Map<String, Object> event = eventOfType(contract.id(),
+                "contract.security.status-changed");
+        assertThat(event.get("aggregate_type")).isEqualTo("Security");
+        assertThat(event.get("aggregate_id")).isEqualTo(active.id());
+        assertThat(event.get("aggregate_version")).isEqualTo(2L);
+        assertThat(event.get("partition_key")).isEqualTo(contract.id().toString());
+        assertThat(event.get("status")).isEqualTo("PENDING");
+        assertThat(event.get("tenant_id")).isEqualTo(TENANT);
+        assertThat((String) event.get("payload"))
+                .contains("\"contractId\":\"" + contract.id() + "\"")
+                .contains("\"securityId\":\"" + active.id() + "\"")
+                .contains("\"securityType\":\"LETTER_OF_CREDIT\"")
+                .contains("\"previousStatus\":\"ACTIVE\"")
+                .contains("\"status\":\"RELEASED\"")
+                .doesNotContain("\"requiredAmount\"");
+    }
+
+    @Test
+    void releasesAnExpiredSecurityAtTheLaterAggregateVersion() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView expired = create(contract, request("BANK_GUARANTEE",
+                "1000000", "0", "USD", null, LocalDate.now().minusDays(1), "APR-OLD"));
+        assertThat(expired.status()).isEqualTo("EXPIRED");
+
+        ContractSecurityView released = changeStatus(contract, expired.id(), "RELEASED");
+
+        assertThat(released.status()).isEqualTo("RELEASED");
+        assertThat(statusOf(expired.id())).isEqualTo("RELEASED");
+        Map<String, Object> event = eventOfType(contract.id(),
+                "contract.security.status-changed");
+        assertThat(event.get("aggregate_version")).isEqualTo(3L);
+        assertThat((String) event.get("payload"))
+                .contains("\"previousStatus\":\"EXPIRED\"")
+                .contains("\"status\":\"RELEASED\"");
+    }
+
+    @Test
+    void releasedIsTerminalAndNoFurtherStatusEventIsWritten() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView active = create(contract, request("LETTER_OF_CREDIT",
+                "5000000", "4000000", "USD", null, null, null));
+        changeStatus(contract, active.id(), "RELEASED");
+
+        assertThatThrownBy(() -> changeStatus(contract, active.id(), "EXPIRED"))
+                .isInstanceOf(ContractConflictException.class)
+                .satisfies(ex -> assertThat(((ContractConflictException) ex).code())
+                        .isEqualTo("INVALID_STATUS_TRANSITION"));
+
+        assertThat(statusOf(active.id())).isEqualTo("RELEASED");
+        assertThat(eventCount(contract.id(), "contract.security.status-changed")).isEqualTo(1);
+    }
+
+    @Test
+    void expiredCannotBeExpiredAgainAndWritesNoStatusEvent() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView expired = create(contract, request("BANK_GUARANTEE",
+                "1000000", "0", "USD", null, LocalDate.now().minusDays(1), null));
+
+        assertThatThrownBy(() -> changeStatus(contract, expired.id(), "EXPIRED"))
+                .isInstanceOf(ContractConflictException.class)
+                .satisfies(ex -> assertThat(((ContractConflictException) ex).code())
+                        .isEqualTo("INVALID_STATUS_TRANSITION"));
+
+        assertThat(statusOf(expired.id())).isEqualTo("EXPIRED");
+        assertThat(eventCount(contract.id(), "contract.security.status-changed")).isZero();
+    }
+
+    @Test
+    void tenantAndContractWallHideTheSecurityStatusAction() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView created = create(contract, request("LETTER_OF_CREDIT",
+                "5000000", "4000000", "USD", null, null, null));
+
+        assertThatThrownBy(() -> security.updateStatus(OTHER_TENANT, null, contract.id(),
+                created.id(), new UpdateContractSecurityStatusRequest("RELEASED")))
+                .isInstanceOf(ContractNotFoundException.class);
+
+        Contract otherContract = createContract("XOL-2026-00094");
+        assertThatThrownBy(() -> changeStatus(otherContract, created.id(), "RELEASED"))
+                .isInstanceOf(ResourceNotFoundException.class);
+        assertThatThrownBy(() -> changeStatus(contract, UUID.randomUUID(), "RELEASED"))
+                .isInstanceOf(ResourceNotFoundException.class);
+
+        assertThat(statusOf(created.id())).isEqualTo("ACTIVE");
+        assertThat(eventCount(contract.id(), "contract.security.status-changed")).isZero();
+    }
+
+    @Test
+    void statusRollbackLeavesTheStatusAndStatusEventBehind() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractSecurityView active = create(contract, request("LETTER_OF_CREDIT",
+                "5000000", "4000000", "USD", REINSURER, LocalDate.now().plusDays(30), null));
+
+        assertThatThrownBy(() -> transaction.executeWithoutResult(status -> {
+            changeStatus(contract, active.id(), "RELEASED");
+            throw new IllegalStateException("force rollback");
+        })).isInstanceOf(IllegalStateException.class)
+                .hasMessage("force rollback");
+
+        assertThat(statusOf(active.id())).isEqualTo("ACTIVE");
+        assertThat(eventCount(contract.id(), "contract.security.status-changed")).isZero();
+    }
+
     private Contract createContract(String contractNumber) {
         return contracts.create(new CreateContractRequest(TENANT, contractNumber,
                 "EXCESS_OF_LOSS", CEDENT, REINSURER, FROM, TO, "USD", null));
@@ -220,6 +342,21 @@ class ContractSecurityOutboxIntegrationTest {
 
     private ContractSecurityView create(Contract contract, CreateContractSecurityRequest request) {
         return security.create(TENANT, null, contract.id(), request);
+    }
+
+    private ContractSecurityView changeStatus(Contract contract, UUID securityId, String status) {
+        return security.updateStatus(TENANT, null, contract.id(), securityId,
+                new UpdateContractSecurityStatusRequest(status));
+    }
+
+    private String statusOf(UUID securityId) {
+        return jdbc.queryForObject("SELECT status FROM contract_security WHERE id = ?",
+                String.class, securityId);
+    }
+
+    private Instant updatedAt(UUID securityId) {
+        return jdbc.queryForObject("SELECT updated_at FROM contract_security WHERE id = ?",
+                (rs, rowNum) -> rs.getTimestamp("updated_at").toInstant(), securityId);
     }
 
     private static CreateContractSecurityRequest request(

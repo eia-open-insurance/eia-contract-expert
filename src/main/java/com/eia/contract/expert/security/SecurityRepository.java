@@ -1,5 +1,6 @@
 package com.eia.contract.expert.security;
 
+import com.eia.contract.expert.ContractConflictException;
 import com.eia.contract.expert.ResourceNotFoundException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -102,6 +103,34 @@ public class SecurityRepository {
                  WHERE tenant_id = ? AND contract_id = ?
                    AND status NOT IN ('RELEASED', 'EXPIRED')
                 """, releaseDate, Timestamp.from(Instant.now()), tenantId, contractId);
+    }
+
+    /**
+     * Compares and sets the status so two concurrent lifecycle actions cannot both
+     * win, and stamps {@code updated_at}. A zero-row update means the row
+     * disappeared or another request already moved it; both are reported as a 404
+     * or a 409 by the caller.
+     */
+    public ContractSecurity updateStatus(UUID tenantId, UUID contractId, UUID id,
+                                         SecurityRules.SecurityStatus expected,
+                                         SecurityRules.SecurityStatus target,
+                                         Instant updatedAt) {
+        int updated = jdbc.update("""
+                UPDATE contract_security
+                   SET status = ?, updated_at = ?
+                 WHERE tenant_id = ? AND contract_id = ? AND id = ? AND status = ?
+                """, target.name(), Timestamp.from(updatedAt), tenantId, contractId, id,
+                expected.name());
+        if (updated == 0) {
+            ContractSecurity current = findById(tenantId, contractId, id)
+                    .orElseThrow(() -> new ResourceNotFoundException("Security", id));
+            throw new ContractConflictException("INVALID_STATUS_TRANSITION",
+                    "Security status cannot move from " + current.status() + " to " + target,
+                    "status", "Allowed transitions: ACTIVE, OUTSTANDING, PARTIAL, or REQUIRED "
+                    + "-> RELEASED or EXPIRED; EXPIRED -> RELEASED; RELEASED is terminal");
+        }
+        return findById(tenantId, contractId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Security", id));
     }
 
     private static Instant instant(java.sql.ResultSet rs, String column) throws java.sql.SQLException {

@@ -38,13 +38,17 @@ controller and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
 query parameter.
 
 Security/collateral has a public API:
-`GET/POST /api/v1/contracts/{contractId}/security`. A record carries the security
-type, the secured and held amounts, the contract currency, an optional provider
-party, expiry date, and approval reference. The expert derives the status
-(`ACTIVE`, or `EXPIRED` when the expiry date has already passed) and writes
-`contract.security.recorded` through the transactional outbox. The internal
-`/internal/v1/contracts/{id}/security` endpoint remains for the bind and
-commutation slices and writes the same event.
+`GET/POST /api/v1/contracts/{contractId}/security` and
+`PATCH /api/v1/contracts/{contractId}/security/{securityId}/status`. A record
+carries the security type, the secured and held amounts, the contract currency,
+an optional provider party, expiry date, and approval reference. The expert
+derives the create status (`ACTIVE`, or `EXPIRED` when the expiry date has
+already passed). A live record (`ACTIVE`, `OUTSTANDING`, `PARTIAL`, `REQUIRED`)
+can be released or expired, an `EXPIRED` record can still be released, and
+`RELEASED` is terminal. Creation writes `contract.security.recorded` and a status
+action writes `contract.security.status-changed` through the transactional
+outbox. The internal `/internal/v1/contracts/{id}/security` endpoint remains for
+the bind and commutation slices and writes the recorded event.
 
 Period bordereaux have their own public API:
 `GET/POST /api/v1/contracts/{contractId}/bordereaux` and
@@ -69,6 +73,7 @@ cession capacity, security breach, and commutation approval are enforced here.
 Every write also appends its canonical domain event to the transactional outbox
 (`contract.contract.created`, `.updated`, `.bound`, `.commuted`,
 `contract.cession.recorded`, `contract.security.recorded`,
+`contract.security.status-changed`,
 `contract.technical-account.created`/`.issued`/`.settled`,
 `contract.bordereau.received`/`.processed`/`.failed`,
 `contract.cash-call.requested`/`.issued`/`.settled`/`.cancelled`, and the catalog

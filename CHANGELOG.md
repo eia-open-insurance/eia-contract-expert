@@ -34,6 +34,13 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   is past), the list is newest-first with exactly the public collateral fields,
   and the create writes `contract.security.recorded` through the transactional
   outbox. The existing internal security endpoint is unchanged.
+- Security lifecycle: `PATCH /api/v1/contracts/{contractId}/security/{securityId}/status`
+  releases or expires a live collateral record (`ACTIVE`, `OUTSTANDING`,
+  `PARTIAL`, or `REQUIRED` -> `RELEASED` or `EXPIRED`; `EXPIRED` -> `RELEASED`).
+  `RELEASED` is terminal (409 `INVALID_STATUS_TRANSITION`), the update is
+  tenant/contract scoped and stamps `updated_at`, and every change writes
+  `contract.security.status-changed` through the transactional outbox in the
+  same transaction.
 - Invariants: tower overlap (CTR-02), aggregate limit (CTR-03), shares total 100%
   (CTR-01), required terms by contract type, over-collateralisation approval,
   cession capacity (CTR-04) and source share (CTR-05), security breach block
@@ -68,8 +75,8 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 223 JUnit tests, including outbox payload, rollback, failure-atomicity,
-  bordereau and cash-call lifecycle, and scheduling tests.
+- 266 JUnit tests, including outbox payload, rollback, failure-atomicity,
+  security lifecycle, bordereau and cash-call lifecycle, and scheduling tests.
 
 ### Changed
 
