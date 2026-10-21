@@ -258,7 +258,7 @@ class TechnicalAccountControllerTest {
     }
 
     @Test
-    void issuesDraftAccountWhenLineTotalsReconcile() throws Exception {
+    void issuesDraftAccountWhenLineBucketTotalsReconcile() throws Exception {
         contractExists();
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
@@ -266,11 +266,19 @@ class TechnicalAccountControllerTest {
                 new TechnicalAccountLineRepository.LineTotal(
                         "PREMIUM", new BigDecimal("1000.0000")),
                 new TechnicalAccountLineRepository.LineTotal(
-                        "LOSS", new BigDecimal("400.0000")),
+                        "PAID_LOSS", new BigDecimal("250.0000")),
                 new TechnicalAccountLineRepository.LineTotal(
-                        "COMMISSION", new BigDecimal("100.0000")),
+                        "OUTSTANDING_LOSS", new BigDecimal("100.0000")),
                 new TechnicalAccountLineRepository.LineTotal(
-                        "OTHER", new BigDecimal("50.0000"))));
+                        "IBNR", new BigDecimal("50.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "COMMISSION", new BigDecimal("80.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "BROKERAGE", new BigDecimal("20.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "OTHER", new BigDecimal("30.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "TAX", new BigDecimal("20.0000"))));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
                 TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED))
                 .thenReturn(Fixtures.technicalAccount("ISSUED"));
@@ -286,13 +294,15 @@ class TechnicalAccountControllerTest {
     }
 
     @Test
-    void rejectsIssueWhenLineTotalsDoNotReconcileWithPerTypeDetail() throws Exception {
+    void rejectsIssueWhenLineTotalsDoNotReconcileWithPerBucketDetail() throws Exception {
         contractExists();
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
         when(lines.totals(TENANT, ACCOUNT_ID)).thenReturn(List.of(
                 new TechnicalAccountLineRepository.LineTotal(
-                        "PREMIUM", new BigDecimal("900.0000"))));
+                        "PREMIUM", new BigDecimal("900.0000")),
+                new TechnicalAccountLineRepository.LineTotal(
+                        "PAID_LOSS", new BigDecimal("300.0000"))));
 
         mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
                         .header("X-EIA-Tenant", TENANT.toString())
@@ -305,8 +315,16 @@ class TechnicalAccountControllerTest {
                 .andExpect(jsonPath("$.details[0].message")
                         .value("PREMIUM lines total 900.0000 but cededPremium is 1000.0000"))
                 .andExpect(jsonPath("$.details[1].field").value("LOSS"))
+                .andExpect(jsonPath("$.details[1].message")
+                        .value("PAID_LOSS, OUTSTANDING_LOSS, IBNR, ALAE, REINSTATEMENT, "
+                                + "CASH_CALL lines total 300.0000 but cededLosses is 400.0000"))
                 .andExpect(jsonPath("$.details[2].field").value("COMMISSION"))
-                .andExpect(jsonPath("$.details[3].field").value("OTHER"));
+                .andExpect(jsonPath("$.details[2].message")
+                        .value("COMMISSION, BROKERAGE lines total 0.0000 but commission is 100.0000"))
+                .andExpect(jsonPath("$.details[3].field").value("OTHER"))
+                .andExpect(jsonPath("$.details[3].message")
+                        .value("FUNDS_WITHHELD, TAX, ADJUSTMENT, OTHER lines total 0.0000 "
+                                + "but otherCharges is 50.0000"));
 
         verify(accounts, never()).updateStatus(any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());

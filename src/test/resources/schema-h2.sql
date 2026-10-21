@@ -268,7 +268,9 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
 
--- Line detail for a technical account (H2 mirror of the PostgreSQL table).
+-- Line detail for a technical account (H2 mirror of the PostgreSQL table). The
+-- line type is the SPEC 11.3.4 detail vocabulary; every type rolls into one of
+-- the four account header components for issue-time reconciliation.
 CREATE TABLE IF NOT EXISTS contract_technical_account_line (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -279,7 +281,9 @@ CREATE TABLE IF NOT EXISTS contract_technical_account_line (
     amount NUMERIC(19,4) NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT ck_contract_technical_account_line_type CHECK (line_type IN (
-        'PREMIUM', 'LOSS', 'COMMISSION', 'OTHER'
+        'PREMIUM', 'COMMISSION', 'BROKERAGE', 'PAID_LOSS', 'OUTSTANDING_LOSS',
+        'IBNR', 'ALAE', 'REINSTATEMENT', 'CASH_CALL', 'FUNDS_WITHHELD',
+        'TAX', 'ADJUSTMENT', 'OTHER'
     )),
     CONSTRAINT ck_contract_technical_account_line_amount CHECK (amount > 0),
     CONSTRAINT fk_contract_technical_account_line_account FOREIGN KEY (account_id)

@@ -4,6 +4,7 @@ import com.eia.contract.expert.ApiError;
 import com.eia.contract.expert.ContractConflictException;
 import com.eia.contract.expert.ContractValidationException;
 import com.eia.contract.expert.Values;
+import com.eia.contract.expert.technicalaccount.TechnicalAccountLineType.Bucket;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -13,13 +14,17 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 /**
  * Validation, totals, and issue-time reconciliation for technical-account lines.
  *
  * <p>The header remains the reconciled view: a line is detail that must add up
- * to the matching header component. The rule applies only when at least one
- * line exists, so accounts created before the line slice (or by the period
+ * to the matching header component. The line types are the detailed audit
+ * vocabulary; each one rolls into exactly one of the four header
+ * {@link Bucket buckets}, and the bucket totals are compared with the header
+ * when a DRAFT account is issued. The rule applies only when at least one line
+ * exists, so accounts created before the line slice (or by the period
  * bordereau) can still be issued with only header amounts.</p>
  */
 final class TechnicalAccountLineRules {
@@ -69,7 +74,7 @@ final class TechnicalAccountLineRules {
         }
     }
 
-    /** Totals for the read model, including zeroes for absent types. */
+    /** Detailed totals for the read model, including zeroes for absent types. */
     static Map<TechnicalAccountLineType, BigDecimal> sumLines(
             List<ContractTechnicalAccountLine> lines) {
         Map<TechnicalAccountLineType, BigDecimal> totals = emptyTotals();
@@ -79,7 +84,19 @@ final class TechnicalAccountLineRules {
         return totals;
     }
 
-    /** Totals in wire order and as the decimal strings used everywhere else. */
+    /**
+     * Rolls the detailed line-type totals into the four header buckets. The
+     * bucket totals are the reconciliation view; the detailed totals remain the
+     * audit breakdown returned beside them.
+     */
+    static Map<Bucket, BigDecimal> bucketTotals(
+            Map<TechnicalAccountLineType, BigDecimal> totals) {
+        Map<Bucket, BigDecimal> buckets = emptyBucketTotals();
+        totals.forEach((type, amount) -> buckets.merge(type.bucket(), amount, BigDecimal::add));
+        return buckets;
+    }
+
+    /** Detailed totals in wire order and as the decimal strings used everywhere else. */
     static Map<String, String> formattedTotals(
             Map<TechnicalAccountLineType, BigDecimal> totals) {
         Map<String, String> formatted = new LinkedHashMap<>();
@@ -89,11 +106,21 @@ final class TechnicalAccountLineRules {
         return formatted;
     }
 
+    /** Bucket totals keyed by their lowercase wire names and always all present. */
+    static Map<String, String> formattedBucketTotals(Map<Bucket, BigDecimal> totals) {
+        Map<String, String> formatted = new LinkedHashMap<>();
+        for (Bucket bucket : Bucket.values()) {
+            formatted.put(bucket.key(), money(totals.getOrDefault(bucket, ZERO)));
+        }
+        return formatted;
+    }
+
     /**
      * Applies CTR-08 to the four header components. No lines means the legacy
      * header-only account, which stays issuable. A mismatch is reported for
-     * every offending type in one conflict, so the caller can fix all of them
-     * in one pass.
+     * every offending bucket in one conflict, so the caller can fix all of them
+     * in one pass; the detail names the line types that roll into the bucket so
+     * the caller can see what to correct.
      */
     static void reconcile(ContractTechnicalAccount account,
                           List<TechnicalAccountLineRepository.LineTotal> rows) {
@@ -102,17 +129,19 @@ final class TechnicalAccountLineRules {
         }
         Map<TechnicalAccountLineType, BigDecimal> actual = emptyTotals();
         for (TechnicalAccountLineRepository.LineTotal row : rows) {
-            actual.put(TechnicalAccountLineType.valueOf(row.lineType()), row.amount());
+            TechnicalAccountLineType type = TechnicalAccountLineType.valueOf(row.lineType());
+            actual.merge(type, row.amount(), BigDecimal::add);
         }
+        Map<Bucket, BigDecimal> actualBuckets = bucketTotals(actual);
 
         List<ApiError.FieldViolation> mismatches = new ArrayList<>();
-        for (TechnicalAccountLineType type : TechnicalAccountLineType.values()) {
-            BigDecimal expected = expectedTotal(account, type);
-            BigDecimal lineTotal = actual.getOrDefault(type, ZERO);
+        for (Bucket bucket : Bucket.values()) {
+            BigDecimal expected = expectedTotal(account, bucket);
+            BigDecimal lineTotal = actualBuckets.getOrDefault(bucket, ZERO);
             if (expected.compareTo(lineTotal) != 0) {
-                mismatches.add(new ApiError.FieldViolation(type.name(),
-                        type.name() + " lines total " + money(lineTotal)
-                                + " but " + type.headerField() + " is " + money(expected)));
+                mismatches.add(new ApiError.FieldViolation(bucket.name(),
+                        bucketName(bucket) + " lines total " + money(lineTotal)
+                                + " but " + bucket.headerField() + " is " + money(expected)));
             }
         }
         if (!mismatches.isEmpty()) {
@@ -130,14 +159,28 @@ final class TechnicalAccountLineRules {
         return totals;
     }
 
-    private static BigDecimal expectedTotal(ContractTechnicalAccount account,
-                                            TechnicalAccountLineType type) {
-        return switch (type) {
+    private static Map<Bucket, BigDecimal> emptyBucketTotals() {
+        Map<Bucket, BigDecimal> totals = new EnumMap<>(Bucket.class);
+        for (Bucket bucket : Bucket.values()) {
+            totals.put(bucket, ZERO);
+        }
+        return totals;
+    }
+
+    private static BigDecimal expectedTotal(ContractTechnicalAccount account, Bucket bucket) {
+        return switch (bucket) {
             case PREMIUM -> account.cededPremium();
             case LOSS -> account.cededLosses();
             case COMMISSION -> account.commission();
             case OTHER -> account.otherCharges();
         };
+    }
+
+    /** @return the contributing type names, e.g. {@code COMMISSION, BROKERAGE} */
+    private static String bucketName(Bucket bucket) {
+        return bucket.types().stream()
+                .map(Enum::name)
+                .collect(Collectors.joining(", "));
     }
 
     private static String optionalText(String raw, String field, int maxLength) {

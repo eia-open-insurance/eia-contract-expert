@@ -40,13 +40,21 @@ controllers and accept the tenant from `X-EIA-Tenant` or the internal `tenantId`
 query parameter.
 
 A technical account carries line detail behind its header: the lines endpoint
-lists the lines with per-type totals, adds a line, and removes one. Lines can
-only be changed while the account is `DRAFT` (409 `ACCOUNT_NOT_EDITABLE`).
-Issuing an account that has any lines requires each line-type total to equal its
-header component (`PREMIUM` = ceded premium, `LOSS` = ceded losses,
-`COMMISSION` = commission, `OTHER` = other charges); otherwise the transition is
-rejected with 409 `ACCOUNT_LINES_DO_NOT_RECONCILE` and the per-type mismatch
-detail. An account with no lines keeps the legacy header-only issue path.
+lists the lines with detailed per-type totals and four bucket totals, adds a
+line, and removes one. The implemented line types are `PREMIUM`, `COMMISSION`,
+`BROKERAGE`, `PAID_LOSS`, `OUTSTANDING_LOSS`, `IBNR`, `ALAE`, `REINSTATEMENT`,
+`CASH_CALL`, `FUNDS_WITHHELD`, `TAX`, `ADJUSTMENT`, and `OTHER`. Each type rolls
+into one of four reconciliation buckets: `PREMIUM` -> `premium`; `PAID_LOSS`,
+`OUTSTANDING_LOSS`, `IBNR`, `ALAE`, `REINSTATEMENT`, and `CASH_CALL` -> `loss`;
+`COMMISSION` and `BROKERAGE` -> `commission`; `FUNDS_WITHHELD`, `TAX`,
+`ADJUSTMENT`, and `OTHER` -> `other`. Lines can only be changed while the account
+is `DRAFT` (409 `ACCOUNT_NOT_EDITABLE`). Issuing an account that has any lines
+requires each bucket total to equal its header component (`premium` = ceded
+premium, `loss` = ceded losses, `commission` = commission, `other` = other
+charges); otherwise the transition is rejected with 409
+`ACCOUNT_LINES_DO_NOT_RECONCILE` and one detail per offending bucket naming the
+contributing line types. An account with no lines keeps the legacy header-only
+issue path.
 
 Security/collateral has a public API:
 `GET/POST /api/v1/contracts/{contractId}/security` and

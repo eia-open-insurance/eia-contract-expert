@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -89,7 +90,7 @@ class TechnicalAccountLineOutboxIntegrationTest {
         ContractTechnicalAccountLine premium2 =
                 addLine(contract, account, "PREMIUM", "400.0000");
         ContractTechnicalAccountLine loss =
-                addLine(contract, account, "LOSS", "400.0000");
+                addLine(contract, account, "PAID_LOSS", "400.0000");
 
         TechnicalAccountLineList view =
                 lines.list(TENANT, null, contract.id(), account.id());
@@ -99,9 +100,14 @@ class TechnicalAccountLineOutboxIntegrationTest {
                 .containsExactlyInAnyOrder(premium1.id(), premium2.id(), loss.id());
         assertThat(view.totals())
                 .containsEntry("PREMIUM", "1000.0000")
-                .containsEntry("LOSS", "400.0000")
+                .containsEntry("PAID_LOSS", "400.0000")
                 .containsEntry("COMMISSION", "0.0000")
                 .containsEntry("OTHER", "0.0000");
+        assertThat(view.bucketTotals())
+                .containsEntry("premium", "1000.0000")
+                .containsEntry("loss", "400.0000")
+                .containsEntry("commission", "0.0000")
+                .containsEntry("other", "0.0000");
 
         assertThat(eventCount(contract.id(), "contract.technical-account.line-added"))
                 .isEqualTo(3);
@@ -118,7 +124,6 @@ class TechnicalAccountLineOutboxIntegrationTest {
                 .contains("\"lineId\":\"" + premium1.id() + "\"")
                 .contains("\"lineType\":\"PREMIUM\"")
                 .contains("\"amount\":\"600.0000\"");
-
         lines.remove(TENANT, null, contract.id(), account.id(), premium2.id());
 
         TechnicalAccountLineList after =
@@ -143,9 +148,13 @@ class TechnicalAccountLineOutboxIntegrationTest {
         ContractTechnicalAccount account = createAccount(contract);
         ContractTechnicalAccountLine premium =
                 addLine(contract, account, "PREMIUM", "1000.0000");
-        addLine(contract, account, "LOSS", "400.0000");
-        addLine(contract, account, "COMMISSION", "100.0000");
-        addLine(contract, account, "OTHER", "50.0000");
+        addLine(contract, account, "PAID_LOSS", "250.0000");
+        addLine(contract, account, "OUTSTANDING_LOSS", "100.0000");
+        addLine(contract, account, "IBNR", "50.0000");
+        addLine(contract, account, "COMMISSION", "80.0000");
+        addLine(contract, account, "BROKERAGE", "20.0000");
+        addLine(contract, account, "OTHER", "30.0000");
+        addLine(contract, account, "TAX", "20.0000");
 
         ContractTechnicalAccount issued = accounts.updateStatus(TENANT, null, contract.id(),
                 account.id(), new UpdateTechnicalAccountStatusRequest("ISSUED"));
@@ -162,7 +171,7 @@ class TechnicalAccountLineOutboxIntegrationTest {
                 .satisfies(ex -> assertThat(((ContractConflictException) ex).code())
                         .isEqualTo("ACCOUNT_NOT_EDITABLE"));
 
-        assertThat(count("contract_technical_account_line")).isEqualTo(4);
+        assertThat(count("contract_technical_account_line")).isEqualTo(8);
         assertThat(eventCount(contract.id(), "contract.technical-account.line-removed"))
                 .isZero();
     }
@@ -172,7 +181,7 @@ class TechnicalAccountLineOutboxIntegrationTest {
         Contract contract = createContract();
         ContractTechnicalAccount account = createAccount(contract);
         addLine(contract, account, "PREMIUM", "900.0000");
-        addLine(contract, account, "LOSS", "400.0000");
+        addLine(contract, account, "PAID_LOSS", "400.0000");
         addLine(contract, account, "COMMISSION", "100.0000");
         addLine(contract, account, "OTHER", "50.0000");
 
@@ -220,6 +229,61 @@ class TechnicalAccountLineOutboxIntegrationTest {
     }
 
     @Test
+    void persistsEveryExpandedLineTypeAndRollsUpItsBucket() {
+        Contract contract = createContract();
+        ContractTechnicalAccount account = createAccount(contract);
+
+        for (TechnicalAccountLineType type : TechnicalAccountLineType.values()) {
+            ContractTechnicalAccountLine line =
+                    addLine(contract, account, type.name(), "1.0000");
+            assertThat(line.lineType()).isEqualTo(type);
+        }
+
+        TechnicalAccountLineList view =
+                lines.list(TENANT, null, contract.id(), account.id());
+        assertThat(view.lines()).hasSize(TechnicalAccountLineType.values().length);
+        assertThat(view.lines())
+                .extracting(ContractTechnicalAccountLine::lineType)
+                .containsExactlyInAnyOrder(TechnicalAccountLineType.values());
+        assertThat(view.totals())
+                .containsEntry("PREMIUM", "1.0000")
+                .containsEntry("COMMISSION", "1.0000")
+                .containsEntry("BROKERAGE", "1.0000")
+                .containsEntry("PAID_LOSS", "1.0000")
+                .containsEntry("OUTSTANDING_LOSS", "1.0000")
+                .containsEntry("IBNR", "1.0000")
+                .containsEntry("ALAE", "1.0000")
+                .containsEntry("REINSTATEMENT", "1.0000")
+                .containsEntry("CASH_CALL", "1.0000")
+                .containsEntry("FUNDS_WITHHELD", "1.0000")
+                .containsEntry("TAX", "1.0000")
+                .containsEntry("ADJUSTMENT", "1.0000")
+                .containsEntry("OTHER", "1.0000")
+                .hasSize(13);
+        assertThat(view.bucketTotals())
+                .containsEntry("premium", "1.0000")
+                .containsEntry("loss", "6.0000")
+                .containsEntry("commission", "2.0000")
+                .containsEntry("other", "4.0000")
+                .hasSize(4);
+    }
+
+    @Test
+    void databaseCheckRejectsAnUnknownLineType() {
+        Contract contract = createContract();
+        ContractTechnicalAccount account = createAccount(contract);
+
+        assertThatThrownBy(() -> jdbc.update("""
+                INSERT INTO contract_technical_account_line
+                    (id, tenant_id, account_id, line_type, amount, created_at)
+                VALUES (?, ?, ?, 'FEE', 1.0000, CURRENT_TIMESTAMP)
+                """, UUID.randomUUID(), TENANT, account.id()))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertThat(count("contract_technical_account_line")).isZero();
+    }
+
+    @Test
     void issuesAHeaderOnlyLegacyAccountWithoutLines() {
         Contract contract = createContract();
         ContractTechnicalAccount account = createAccount(contract);
@@ -240,7 +304,11 @@ class TechnicalAccountLineOutboxIntegrationTest {
                 .isInstanceOf(ContractValidationException.class)
                 .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
                         .isEqualTo("INVALID_AMOUNT"));
-        assertThatThrownBy(() -> addLine(contract, account, "BROKERAGE", "10.0000"))
+        assertThatThrownBy(() -> addLine(contract, account, "LOSS", "10.0000"))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_LINE_TYPE"));
+        assertThatThrownBy(() -> addLine(contract, account, "FEE", "10.0000"))
                 .isInstanceOf(ContractValidationException.class)
                 .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
                         .isEqualTo("INVALID_LINE_TYPE"));

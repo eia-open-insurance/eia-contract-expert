@@ -5,6 +5,8 @@ import com.eia.contract.expert.Fixtures;
 import com.eia.platform.libs.outbox.OutboxEvent;
 import com.eia.platform.libs.outbox.OutboxRepository;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -79,26 +81,65 @@ class TechnicalAccountLineControllerTest {
     }
 
     @Test
-    void listsLinesAndTotalsByType() throws Exception {
+    void listsLinesAndDetailedAndBucketTotals() throws Exception {
         contractExists();
         accountExists("DRAFT");
         when(lines.findAll(TENANT, ACCOUNT_ID)).thenReturn(List.of(
                 Fixtures.technicalAccountLine("PREMIUM", "1000.0000"),
                 Fixtures.technicalAccountLine(OTHER_LINE_ID, "PREMIUM", "250.0000"),
-                Fixtures.technicalAccountLine(UUID.randomUUID(), "LOSS", "400.0000")));
+                Fixtures.technicalAccountLine(UUID.randomUUID(), "PAID_LOSS", "400.0000"),
+                Fixtures.technicalAccountLine(UUID.randomUUID(), "IBNR", "50.0000")));
 
         mvc.perform(get(PATH, CONTRACT_ID, ACCOUNT_ID).header("X-EIA-Tenant", TENANT.toString()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value(ACCOUNT_ID.toString()))
-                .andExpect(jsonPath("$.lines.length()").value(3))
+                .andExpect(jsonPath("$.lines.length()").value(4))
                 .andExpect(jsonPath("$.lines[0].lineType").value("PREMIUM"))
                 .andExpect(jsonPath("$.lines[0].reference").value("REF-2026-0001"))
                 .andExpect(jsonPath("$.lines[0].amount").value("1000.0000"))
-                .andExpect(jsonPath("$.lines[2].lineType").value("LOSS"))
+                .andExpect(jsonPath("$.lines[2].lineType").value("PAID_LOSS"))
+                .andExpect(jsonPath("$.lines[3].lineType").value("IBNR"))
                 .andExpect(jsonPath("$.totals.PREMIUM").value("1250.0000"))
-                .andExpect(jsonPath("$.totals.LOSS").value("400.0000"))
+                .andExpect(jsonPath("$.totals.PAID_LOSS").value("400.0000"))
+                .andExpect(jsonPath("$.totals.IBNR").value("50.0000"))
+                .andExpect(jsonPath("$.totals.OUTSTANDING_LOSS").value("0.0000"))
                 .andExpect(jsonPath("$.totals.COMMISSION").value("0.0000"))
-                .andExpect(jsonPath("$.totals.OTHER").value("0.0000"));
+                .andExpect(jsonPath("$.totals.OTHER").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.premium").value("1250.0000"))
+                .andExpect(jsonPath("$.bucketTotals.loss").value("450.0000"))
+                .andExpect(jsonPath("$.bucketTotals.commission").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.other").value("0.0000"));
+    }
+
+    @Test
+    void rollsEveryDetailedTypeIntoItsBucketTotal() throws Exception {
+        contractExists();
+        accountExists("DRAFT");
+        when(lines.findAll(TENANT, ACCOUNT_ID)).thenReturn(List.of(
+                Fixtures.technicalAccountLine("PREMIUM", "100.0000"),
+                Fixtures.technicalAccountLine("COMMISSION", "20.0000"),
+                Fixtures.technicalAccountLine("BROKERAGE", "5.0000"),
+                Fixtures.technicalAccountLine("PAID_LOSS", "30.0000"),
+                Fixtures.technicalAccountLine("OUTSTANDING_LOSS", "10.0000"),
+                Fixtures.technicalAccountLine("IBNR", "7.0000"),
+                Fixtures.technicalAccountLine("ALAE", "3.0000"),
+                Fixtures.technicalAccountLine("REINSTATEMENT", "5.0000"),
+                Fixtures.technicalAccountLine("CASH_CALL", "5.0000"),
+                Fixtures.technicalAccountLine("FUNDS_WITHHELD", "4.0000"),
+                Fixtures.technicalAccountLine("TAX", "3.0000"),
+                Fixtures.technicalAccountLine("ADJUSTMENT", "2.0000"),
+                Fixtures.technicalAccountLine("OTHER", "1.0000")));
+
+        mvc.perform(get(PATH, CONTRACT_ID, ACCOUNT_ID).header("X-EIA-Tenant", TENANT.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.lines.length()").value(13))
+                .andExpect(jsonPath("$.totals.REINSTATEMENT").value("5.0000"))
+                .andExpect(jsonPath("$.totals.CASH_CALL").value("5.0000"))
+                .andExpect(jsonPath("$.totals.FUNDS_WITHHELD").value("4.0000"))
+                .andExpect(jsonPath("$.bucketTotals.premium").value("100.0000"))
+                .andExpect(jsonPath("$.bucketTotals.loss").value("60.0000"))
+                .andExpect(jsonPath("$.bucketTotals.commission").value("25.0000"))
+                .andExpect(jsonPath("$.bucketTotals.other").value("10.0000"));
     }
 
     @Test
@@ -112,7 +153,11 @@ class TechnicalAccountLineControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accountId").value(ACCOUNT_ID.toString()))
                 .andExpect(jsonPath("$.lines.length()").value(0))
-                .andExpect(jsonPath("$.totals.PREMIUM").value("0.0000"));
+                .andExpect(jsonPath("$.totals.PREMIUM").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.premium").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.loss").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.commission").value("0.0000"))
+                .andExpect(jsonPath("$.bucketTotals.other").value("0.0000"));
     }
 
     @Test
@@ -313,7 +358,14 @@ class TechnicalAccountLineControllerTest {
         mvc.perform(post(PATH, CONTRACT_ID, ACCOUNT_ID)
                         .header("X-EIA-Tenant", TENANT.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content(CREATE_BODY.replace("\"PREMIUM\"", "\"BROKERAGE\"")))
+                        .content(CREATE_BODY.replace("\"PREMIUM\"", "\"LOSS\"")))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_LINE_TYPE"));
+
+        mvc.perform(post(PATH, CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(CREATE_BODY.replace("\"PREMIUM\"", "\"FEE\"")))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_LINE_TYPE"));
 
@@ -362,19 +414,43 @@ class TechnicalAccountLineControllerTest {
                         .header("X-EIA-Tenant", TENANT.toString())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"lineType": "loss", "reference": "  CLM-1  ",
+                                {"lineType": "paid_loss", "reference": "  CLM-1  ",
                                  "description": "  Paid loss  ", "amount": "400"}
                                 """))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.lineType").value("LOSS"))
+                .andExpect(jsonPath("$.lineType").value("PAID_LOSS"))
                 .andExpect(jsonPath("$.reference").value("CLM-1"))
                 .andExpect(jsonPath("$.description").value("Paid loss"));
 
         ArgumentCaptor<ContractTechnicalAccountLine> line =
                 ArgumentCaptor.forClass(ContractTechnicalAccountLine.class);
         verify(lines).create(line.capture());
-        assertThat(line.getValue().lineType()).isEqualTo(TechnicalAccountLineType.LOSS);
+        assertThat(line.getValue().lineType()).isEqualTo(TechnicalAccountLineType.PAID_LOSS);
         assertThat(line.getValue().amount()).isEqualByComparingTo(
                 new BigDecimal("400.0000"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(TechnicalAccountLineType.class)
+    void acceptsEveryExpandedLineType(TechnicalAccountLineType lineType) throws Exception {
+        contractExists();
+        accountExists("DRAFT");
+        when(lines.create(any(ContractTechnicalAccountLine.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+
+        mvc.perform(post(PATH, CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"lineType": "%s", "amount": "10.0000"}
+                                """.formatted(lineType.name())))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.lineType").value(lineType.name()));
+
+        ArgumentCaptor<ContractTechnicalAccountLine> line =
+                ArgumentCaptor.forClass(ContractTechnicalAccountLine.class);
+        verify(lines).create(line.capture());
+        assertThat(line.getValue().lineType()).isEqualTo(lineType);
+        assertThat(line.getValue().lineType().bucket()).isEqualTo(lineType.bucket());
     }
 }

@@ -7,14 +7,14 @@ import java.time.Instant;
 import java.util.UUID;
 
 /**
- * One line of a technical account (SPEC 11.3.4 {@code technical_account_line},
- * reduced to the brief's four header components).
+ * One line of a technical account (SPEC 11.3.4 {@code technical_account_line}).
  *
  * <p>A line is a child of the technical account. It carries an optional
  * reference and description for audit, a strictly positive amount, and one
- * {@link TechnicalAccountLineType}. Lines can only be added or removed while
- * the account is {@code DRAFT}; they are the detail behind the header amounts
- * and must reconcile to them before issue.</p>
+ * {@link TechnicalAccountLineType}. Each type rolls into one of the four header
+ * components; lines can only be added or removed while the account is
+ * {@code DRAFT}. They are the detail behind the header amounts and their bucket
+ * totals must reconcile to the header before issue.</p>
  *
  * <p>Money is stored as {@code numeric(19,4)} and exposed as a decimal string
  * (SPEC 10.3).</p>

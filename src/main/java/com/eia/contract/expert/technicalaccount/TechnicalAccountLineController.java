@@ -34,7 +34,8 @@ import java.util.UUID;
  * {@code tenantId} query parameter. Every query is scoped by tenant, contract,
  * and account, so a line of another tenant or another account is a 404. The
  * account view itself deliberately omits lines; this endpoint is the detail
- * read model and returns the per-type totals the issue reconciliation uses.</p>
+ * read model and returns both the per-type totals and the four bucket totals
+ * the issue reconciliation uses.</p>
  *
  * <p>Lines can only be added or removed while the account is {@code DRAFT};
  * otherwise the request is a 409 {@code ACCOUNT_NOT_EDITABLE}. Each mutation
@@ -74,9 +75,11 @@ public class TechnicalAccountLineController {
         requireAccount(tenantId, contractId, accountId);
 
         List<ContractTechnicalAccountLine> detail = lines.findAll(tenantId, accountId);
+        var totals = TechnicalAccountLineRules.sumLines(detail);
         return new TechnicalAccountLineList(accountId, detail,
-                TechnicalAccountLineRules.formattedTotals(
-                        TechnicalAccountLineRules.sumLines(detail)));
+                TechnicalAccountLineRules.formattedTotals(totals),
+                TechnicalAccountLineRules.formattedBucketTotals(
+                        TechnicalAccountLineRules.bucketTotals(totals)));
     }
 
     @PostMapping

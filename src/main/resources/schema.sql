@@ -436,7 +436,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_contract_commutation_executed
 -- creation time as ceded_premium - commission - ceded_losses + other_charges,
 -- so a positive value is due from the cedent to the reinsurer. The SPEC line
 -- breakdown is implemented by `contract_technical_account_line` below with the
--- brief's reduced line-type domain (PREMIUM, LOSS, COMMISSION, OTHER).
+-- full detail vocabulary; each line type rolls into one of these four header
+-- components for reconciliation.
 CREATE TABLE IF NOT EXISTS contract_technical_account (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -468,10 +469,11 @@ CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
 
 -- Line detail for a technical account. Each line belongs to exactly one
 -- account; deleting the account removes its lines. The line type is the
--- brief's reduced domain, and `amount` is strictly positive because a line
--- states an amount owed in its component. The account header stays the
--- reconciled view: on DRAFT -> ISSUED every component total must equal the
--- matching header amount, so the line table is the audit detail behind it.
+-- SPEC 11.3.4 detail vocabulary, and `amount` is strictly positive because a
+-- line states an amount owed in its component. Each line type rolls into one of
+-- the four header components; the account header stays the reconciled view: on
+-- DRAFT -> ISSUED every bucket total must equal the matching header amount, so
+-- the line table is the audit detail behind it.
 CREATE TABLE IF NOT EXISTS contract_technical_account_line (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -482,12 +484,30 @@ CREATE TABLE IF NOT EXISTS contract_technical_account_line (
     amount NUMERIC(19,4) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT ck_contract_technical_account_line_type CHECK (line_type IN (
-        'PREMIUM', 'LOSS', 'COMMISSION', 'OTHER'
+        'PREMIUM', 'COMMISSION', 'BROKERAGE', 'PAID_LOSS', 'OUTSTANDING_LOSS',
+        'IBNR', 'ALAE', 'REINSTATEMENT', 'CASH_CALL', 'FUNDS_WITHHELD',
+        'TAX', 'ADJUSTMENT', 'OTHER'
     )),
     CONSTRAINT ck_contract_technical_account_line_amount CHECK (amount > 0),
     CONSTRAINT fk_contract_technical_account_line_account FOREIGN KEY (account_id)
         REFERENCES contract_technical_account (id) ON DELETE CASCADE
 );
+
+-- Widen an existing line table to the detail vocabulary. The first slice wrote
+-- the aggregate LOSS type; fold it into PAID_LOSS so the widened check validates
+-- and the loss bucket total is preserved. The inline check above already has the
+-- widened values for a fresh database.
+ALTER TABLE contract_technical_account_line
+    DROP CONSTRAINT IF EXISTS ck_contract_technical_account_line_type;
+UPDATE contract_technical_account_line
+   SET line_type = 'PAID_LOSS'
+ WHERE line_type = 'LOSS';
+ALTER TABLE contract_technical_account_line
+    ADD CONSTRAINT ck_contract_technical_account_line_type CHECK (line_type IN (
+        'PREMIUM', 'COMMISSION', 'BROKERAGE', 'PAID_LOSS', 'OUTSTANDING_LOSS',
+        'IBNR', 'ALAE', 'REINSTATEMENT', 'CASH_CALL', 'FUNDS_WITHHELD',
+        'TAX', 'ADJUSTMENT', 'OTHER'
+    ));
 
 -- The account view reads all lines of one account in insertion order; tenant is
 -- in the key so the contract wall is an index lookup too.

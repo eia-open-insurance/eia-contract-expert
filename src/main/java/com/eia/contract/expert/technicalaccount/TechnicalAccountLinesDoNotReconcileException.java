@@ -6,12 +6,13 @@ import com.eia.contract.expert.ContractConflictException;
 import java.util.List;
 
 /**
- * A DRAFT technical account has lines, but at least one line-type total does not
+ * A DRAFT technical account has lines, but at least one bucket total does not
  * equal its matching header component, so the account cannot be issued.
  *
  * <p>The conflict carries one {@link ApiError.FieldViolation} per offending
- * line type instead of a single field detail, so the caller sees the expected
- * header amount and the actual line total for every type at once.</p>
+ * bucket instead of a single field detail, so the caller sees the expected
+ * header amount and the actual bucket total for every component at once. The
+ * detail message names the line types that roll into the bucket.</p>
  */
 public class TechnicalAccountLinesDoNotReconcileException extends ContractConflictException {
 

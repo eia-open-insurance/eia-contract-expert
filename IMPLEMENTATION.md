@@ -18,7 +18,7 @@ what remains.
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
-| Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each line-type total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
+| Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each bucket total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
 | Cash calls | `contract_cash_call`, `GET/POST /api/v1/contracts/{id}/cash-calls`, `PATCH .../{cashCallId}/status` | period start before end; amount strictly positive; due date required; three-letter currency; unique call number per tenant and contract; REQUESTED -> ISSUED -> SETTLED or REQUESTED -> CANCELLED; terminal statuses immutable; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
 | Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
@@ -152,20 +152,31 @@ written even when dispatch is disabled, so no event is lost.
   `claim_ref` strings rather than SPEC `source_id` UUIDs, because Contract is an
   ASSUMED-book-only vertical with a hard wall against Policy and Direct Claims.
   `source_vertical` is constrained to `ASSUMED` in the database.
-- **`contract_technical_account` with a compact line table.** The brief names the
+- **`contract_technical_account` with a detailed line table.** The brief names the
   table and a compact set of header columns, so the slice implements
   `account_number`, the period, currency, ceded premium, ceded losses,
-  commission, other charges, and a derived balance. The SPEC line breakdown is
-  kept in `contract_technical_account_line` with the brief's reduced domain
-  (`PREMIUM`, `LOSS`, `COMMISSION`, `OTHER`); line CRUD is DRAFT-only, and
-  DRAFT -> ISSUED reconciles every line-type total to its header component when
-  any line exists (CTR-08), reporting all mismatches in one 409
-  `ACCOUNT_LINES_DO_NOT_RECONCILE`. An account with no lines remains issuable
-  for compatibility with header-only accounts. The balance sign convention is
+  commission, other charges, and a derived balance. The SPEC 11.3.4 detail
+  vocabulary is kept in `contract_technical_account_line`:
+  `PREMIUM`, `COMMISSION`, `BROKERAGE`, `PAID_LOSS`, `OUTSTANDING_LOSS`, `IBNR`,
+  `ALAE`, `REINSTATEMENT`, `CASH_CALL`, `FUNDS_WITHHELD`, `TAX`, `ADJUSTMENT`,
+  and `OTHER`. Every type rolls into one of four reconciliation buckets:
+  `PREMIUM` -> `premium`; `PAID_LOSS`, `OUTSTANDING_LOSS`, `IBNR`, `ALAE`,
+  `REINSTATEMENT`, and `CASH_CALL` -> `loss`; `COMMISSION` and `BROKERAGE` ->
+  `commission`; `FUNDS_WITHHELD`, `TAX`, `ADJUSTMENT`, and `OTHER` -> `other`.
+  The `GET .../lines` read model keeps the detailed `totals` map keyed by line
+  type and adds `bucketTotals` keyed `premium`, `loss`, `commission`, and
+  `other`, so a client can read either view without double counting. Line CRUD
+  is DRAFT-only, and DRAFT -> ISSUED reconciles each bucket total to its header
+  component when any line exists (CTR-08), reporting all mismatches in one 409
+  `ACCOUNT_LINES_DO_NOT_RECONCILE` whose details name the contributing types. An
+  account with no lines remains issuable for compatibility with header-only
+  accounts. The first slice's aggregate `LOSS` type is no longer accepted; the
+  schema migration folds existing `LOSS` rows into `PAID_LOSS`, preserving the
+  loss bucket total. The balance sign convention is
   `cededPremium - commission - cededLosses + otherCharges`: positive is due from
   the cedent to the reinsurer. Only the exact `(tenant, contract, period)` key is
-  unique; SPEC CTR-07's fall-within-contract and non-overlap rules, the wider
-  SPEC line domain, and the `AGREED`/`DISPUTED`/`SUPERSEDED` states remain gaps.
+  unique; SPEC CTR-07's fall-within-contract and non-overlap rules and the
+  `AGREED`/`DISPUTED`/`SUPERSEDED` states remain gaps.
 - **Technical-account API prefix and tenant.** The task brief addresses the
   resource at `/api/v1/contracts/{contractId}/technical-accounts`; the expert's
   other child slices are internal, so the controller maps both that path and

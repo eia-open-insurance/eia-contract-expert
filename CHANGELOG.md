@@ -49,19 +49,29 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   (CTR-17), and the ASSUMED book wall.
 - Business-key generation (`CES`, `BRD`, `COM`, `TA`, `CC`) and bind/commutation
   timestamps.
-- Technical-account line detail: `contract_technical_account_line` stores
-  `PREMIUM`, `LOSS`, `COMMISSION`, and `OTHER` lines with an optional reference
-  and description and a strictly positive amount
-  (`numeric(19,4)`). The public
+- Technical-account line detail: `contract_technical_account_line` stores the
+  SPEC 11.3.4 detail vocabulary `PREMIUM`, `COMMISSION`, `BROKERAGE`,
+  `PAID_LOSS`, `OUTSTANDING_LOSS`, `IBNR`, `ALAE`, `REINSTATEMENT`, `CASH_CALL`,
+  `FUNDS_WITHHELD`, `TAX`, `ADJUSTMENT`, and `OTHER`, with an optional reference
+  and description and a strictly positive amount (`numeric(19,4)`). Every type
+  rolls into one of the four account header components: `PREMIUM` -> ceded
+  premium; `PAID_LOSS`, `OUTSTANDING_LOSS`, `IBNR`, `ALAE`, `REINSTATEMENT`, and
+  `CASH_CALL` -> ceded losses; `COMMISSION` and `BROKERAGE` -> commission;
+  `FUNDS_WITHHELD`, `TAX`, `ADJUSTMENT`, and `OTHER` -> other charges. The first
+  slice's aggregate `LOSS` type is no longer accepted; the PostgreSQL schema
+  folds existing `LOSS` rows into `PAID_LOSS`, preserving the loss bucket total.
+  The public
   `GET/POST /api/v1/contracts/{contractId}/technical-accounts/{accountId}/lines`
-  endpoints list the lines with per-type totals and add a line (201);
-  `DELETE .../{lineId}` removes one (204). Both mutations are DRAFT-only
-  (409 `ACCOUNT_NOT_EDITABLE`) and write
+  endpoints list the lines with a detailed per-type `totals` map and a separate
+  `bucketTotals` map keyed `premium`, `loss`, `commission`, and `other`, and add
+  a line (201); `DELETE .../{lineId}` removes one (204). Both mutations are
+  DRAFT-only (409 `ACCOUNT_NOT_EDITABLE`) and write
   `contract.technical-account.line-added`/`.line-removed` through the
   transactional outbox. Issuing an account that has lines reconciles each
-  line-type total to its header component and rejects a mismatch with 409
-  `ACCOUNT_LINES_DO_NOT_RECONCILE` and per-type detail; an account with no lines
-  keeps the legacy header-only issue path.
+  bucket total to its header component and rejects a mismatch with 409
+  `ACCOUNT_LINES_DO_NOT_RECONCILE` and one detail per offending bucket naming
+  the contributing line types; an account with no lines keeps the legacy
+  header-only issue path.
 - Technical-account balance convention
   (`cededPremium - commission - cededLosses + otherCharges`): positive is due
   from the cedent to the reinsurer. Periods are unique per tenant and contract;
