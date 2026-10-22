@@ -34,6 +34,12 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   capped at 120 characters; it is stored and added to the
   `contract.cash-call.settled` payload. `ISSUED` and `CANCELLED` ignore the
   reference.
+- Technical-account settlement references: `contract_technical_account` gains a
+  nullable `settlement_reference` (`varchar(120)`, added by idempotent DDL). The
+  status request accepts an optional `reference`, and `ContractTechnicalAccount`
+  exposes it as `settlementReference`. Settling requires a non-blank reference,
+  trimmed and capped at 120 characters; it is stored and added to the
+  `contract.technical-account.settled` payload. `ISSUED` ignores the reference.
 - Security/collateral: the public
   `GET/POST /api/v1/contracts/{contractId}/security` endpoints record a security
   type, a strictly positive required amount, non-negative held collateral, the
@@ -107,7 +113,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 323 JUnit tests, including outbox payload, rollback, failure-atomicity,
+- 331 JUnit tests, including outbox payload, rollback, failure-atomicity,
   security lifecycle, technical-account line reconciliation, bordereau and
   cash-call lifecycle, and scheduling tests.
 

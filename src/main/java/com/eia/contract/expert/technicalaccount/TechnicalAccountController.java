@@ -153,8 +153,13 @@ public class TechnicalAccountController {
                     lines.totals(tenantId, accountId));
         }
 
+        // Settlement requires the payment reference; issuing ignores any
+        // reference the caller sends because it does not settle the account.
+        String settlementReference = TechnicalAccountRules.settlementReference(
+                target, request.reference());
+
         ContractTechnicalAccount updated = accounts.updateStatus(
-                tenantId, contractId, accountId, from, target);
+                tenantId, contractId, accountId, from, target, settlementReference);
         Instant now = Instant.now();
         EventEnvelope event = switch (target) {
             case ISSUED -> ContractEvents.technicalAccountIssued(contract, updated, now);

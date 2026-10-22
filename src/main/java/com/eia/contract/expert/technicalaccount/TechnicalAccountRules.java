@@ -12,6 +12,8 @@ import java.util.Locale;
 /** Validation and derived values for the technical-account write API. */
 final class TechnicalAccountRules {
 
+    static final int SETTLEMENT_REFERENCE_MAX_LENGTH = 120;
+
     private TechnicalAccountRules() {
     }
 
@@ -76,6 +78,21 @@ final class TechnicalAccountRules {
                     "Only ISSUED and SETTLED can be requested; DRAFT is the creation state");
         }
         return target;
+    }
+
+    /**
+     * Settlement records the payment reference that closed the account, so it is
+     * required for {@code SETTLED} and normalized by trimming. A reference
+     * supplied for any other target status is ignored rather than rejected,
+     * because issuing does not settle anything.
+     *
+     * @return the trimmed reference for {@code SETTLED}, otherwise {@code null}
+     */
+    static String settlementReference(TechnicalAccountStatus target, String raw) {
+        if (target != TechnicalAccountStatus.SETTLED) {
+            return null;
+        }
+        return Values.text(raw, "reference", SETTLEMENT_REFERENCE_MAX_LENGTH);
     }
 
     static void validateTransition(TechnicalAccountStatus from, TechnicalAccountStatus target) {

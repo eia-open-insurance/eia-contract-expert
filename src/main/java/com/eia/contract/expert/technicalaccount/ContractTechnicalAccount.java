@@ -18,8 +18,11 @@ import java.util.UUID;
  * commission exceed ceded premium). A balance of zero means nothing is due.</p>
  *
  * <p>Money is stored as {@code numeric(19,4)} and exposed as a decimal string
- * (SPEC 10.3). The unique period key and the status values are enforced by the
- * database as well as by the controller.</p>
+ * (SPEC 10.3). Settlement captures the payment reference that closed the
+ * account; it is required on the SETTLED transition and ignored by the other
+ * transitions. The unique period key, the status values, and the
+ * settlement-reference length are enforced by the database as well as by the
+ * controller.</p>
  */
 public record ContractTechnicalAccount(
         UUID id,
@@ -35,6 +38,7 @@ public record ContractTechnicalAccount(
         @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal otherCharges,
         @JsonFormat(shape = JsonFormat.Shape.STRING) BigDecimal balance,
         String status,
+        String settlementReference,
         Instant createdAt
 ) {
 
@@ -53,6 +57,6 @@ public record ContractTechnicalAccount(
         return new ContractTechnicalAccount(
                 UUID.randomUUID(), tenantId, contractId, accountNumber, periodStart, periodEnd,
                 currency, cededPremium, cededLosses, commission, otherCharges, balance,
-                TechnicalAccountStatus.DRAFT.name(), Instant.now());
+                TechnicalAccountStatus.DRAFT.name(), null, Instant.now());
     }
 }

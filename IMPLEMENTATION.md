@@ -18,7 +18,7 @@ what remains.
 | Bordereaux | `contract_bordereau`, `GET/POST .../bordereaux`, `GET .../bordereaux/{bordereauId}` | coherent period, line counts, contract currency for the declared total, unique bordereau number |
 | Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
-| Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each bucket total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
+| Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each bucket total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; SETTLED requires a non-blank settlement reference (trimmed, <= 120 characters) and ISSUED ignores the reference; tenant/contract wall |
 | Cash calls | `contract_cash_call`, `GET/POST /api/v1/contracts/{id}/cash-calls`, `PATCH .../{cashCallId}/status` | period start before end; amount strictly positive; due date required; three-letter currency; unique call number per tenant and contract; REQUESTED -> ISSUED -> SETTLED or REQUESTED -> CANCELLED; SETTLED requires a non-blank settlement reference (trimmed, <= 120 characters); ISSUED and CANCELLED ignore the reference; terminal statuses immutable; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
 | Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
@@ -95,7 +95,8 @@ references; the commuted payload adds the commutation identifier, type, basis,
 `agreedAmount`, `savingsAmount`, dates, release document, `contractClosed`, and
 `releasedSecurities`. Technical-account payloads carry `contractId`,
 `contractNumber`, `accountId`, `accountNumber`, `periodStart`, `periodEnd`,
-`currency`, `balance`, and `status`. Technical-account-line payloads carry
+`currency`, `balance`, and `status`; the settled payload additionally carries
+`settlementReference`. Technical-account-line payloads carry
 `contractId`, `accountId`, `lineId`, `lineType`, and `amount`. Period-bordereau
 payloads carry
 `contractId`, `contractNumber`, `bordereauId`, `bordereauNumber`, `period` (a
@@ -178,6 +179,14 @@ written even when dispatch is disabled, so no event is lost.
   the cedent to the reinsurer. Only the exact `(tenant, contract, period)` key is
   unique; SPEC CTR-07's fall-within-contract and non-overlap rules and the
   `AGREED`/`DISPUTED`/`SUPERSEDED` states remain gaps.
+- **Technical-account settlement references.** `contract_technical_account` gains
+  a nullable `settlement_reference` (`varchar(120)`, added by idempotent DDL), and
+  the status request accepts an optional `reference`. Settling requires it to be
+  non-blank, trims it, and caps it at 120 characters; a missing, blank, or
+  over-long reference is 400 `INVALID_REFERENCE`. The trimmed value is stored,
+  returned as `ContractTechnicalAccount.settlementReference`, and added to the
+  `contract.technical-account.settled` payload. `ISSUED` ignores any reference the
+  caller supplies, because issuing does not settle the account.
 - **Technical-account API prefix and tenant.** The task brief addresses the
   resource at `/api/v1/contracts/{contractId}/technical-accounts`; the expert's
   other child slices are internal, so the controller maps both that path and
@@ -263,19 +272,20 @@ written even when dispatch is disabled, so no event is lost.
   `TechnicalAccountLineOutboxIntegrationTest`,
   `BordereauOutboxIntegrationTest`, `CashCallOutboxIntegrationTest`,
   `ContractSecurityOutboxIntegrationTest`,
-  `ContractSecurityOutboxFailureRollbackTest` — 323 tests, run with
+  `ContractSecurityOutboxFailureRollbackTest` — 331 tests, run with
   `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
   the rollback rule for every write (neither the row nor the event survives).
   `TechnicalAccountOutboxIntegrationTest` proves creation, newest-period-first
   listing, period uniqueness, DRAFT -> ISSUED -> SETTLED with the matching
-  events, invalid transitions, the tenant/contract wall, and row/event/key
-  rollback. `TechnicalAccountLineOutboxIntegrationTest` proves line add/list/
-  remove and per-type totals, the line-added and line-removed events, DRAFT-only
-  mutation, issue reconciliation success, mismatch and missing-component
-  rejection with per-type detail, header-only issue, validation, the
-  tenant/contract wall, and add/remove rollback.
+  events, settlement-reference requirement, trimming and length boundary, issue
+  ignoring the reference, invalid transitions, the tenant/contract wall, and
+  row/event/key rollback. `TechnicalAccountLineOutboxIntegrationTest` proves
+  line add/list/remove and per-type totals, the line-added and line-removed
+  events, DRAFT-only mutation, issue reconciliation success, mismatch and
+  missing-component rejection with per-type detail, header-only issue,
+  validation, the tenant/contract wall, and add/remove rollback.
   `BordereauOutboxIntegrationTest` proves period-bordereau creation,
   newest-period-first listing, duplicate-period rejection, processing into a new
   or existing technical account, failure, invalid transitions, the

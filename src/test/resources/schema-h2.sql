@@ -254,6 +254,7 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
     other_charges NUMERIC(19,4) NOT NULL,
     balance NUMERIC(19,4) NOT NULL,
     status VARCHAR(16) NOT NULL,
+    settlement_reference VARCHAR(120),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT uq_contract_technical_account_period
         UNIQUE (tenant_id, contract_id, period_start, period_end),
@@ -267,6 +268,11 @@ CREATE TABLE IF NOT EXISTS contract_technical_account (
 
 CREATE INDEX IF NOT EXISTS ix_contract_technical_account_contract
     ON contract_technical_account (tenant_id, contract_id, period_start);
+
+-- H2 keeps the same upgrade path as PostgreSQL so the schema file is safe to
+-- re-apply to a database created before the settlement-reference slice.
+ALTER TABLE contract_technical_account
+    ADD COLUMN IF NOT EXISTS settlement_reference VARCHAR(120);
 
 -- Line detail for a technical account (H2 mirror of the PostgreSQL table). The
 -- line type is the SPEC 11.3.4 detail vocabulary; every type rolls into one of

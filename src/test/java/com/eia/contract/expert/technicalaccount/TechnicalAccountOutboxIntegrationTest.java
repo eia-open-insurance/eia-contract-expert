@@ -45,6 +45,7 @@ class TechnicalAccountOutboxIntegrationTest {
     private static final LocalDate Q1_END = LocalDate.of(2026, 3, 31);
     private static final LocalDate Q2_START = LocalDate.of(2026, 4, 1);
     private static final LocalDate Q2_END = LocalDate.of(2026, 6, 30);
+    private static final String SETTLEMENT_REFERENCE = "BANK-REF-2026-0001";
 
     @Autowired
     private ContractController contracts;
@@ -138,10 +139,13 @@ class TechnicalAccountOutboxIntegrationTest {
         ContractTechnicalAccount issued = accounts.updateStatus(TENANT, null, contract.id(),
                 created.id(), new UpdateTechnicalAccountStatusRequest("ISSUED"));
         assertThat(issued.status()).isEqualTo("ISSUED");
+        assertThat(issued.settlementReference()).isNull();
 
         ContractTechnicalAccount settled = accounts.updateStatus(TENANT, null, contract.id(),
-                created.id(), new UpdateTechnicalAccountStatusRequest("SETTLED"));
+                created.id(), new UpdateTechnicalAccountStatusRequest("SETTLED",
+                        "  " + SETTLEMENT_REFERENCE + "  "));
         assertThat(settled.status()).isEqualTo("SETTLED");
+        assertThat(settled.settlementReference()).isEqualTo(SETTLEMENT_REFERENCE);
 
         Map<String, Object> issuedEvent = eventOfType(contract.id(),
                 "contract.technical-account.issued");
@@ -149,14 +153,73 @@ class TechnicalAccountOutboxIntegrationTest {
         assertThat((String) issuedEvent.get("payload"))
                 .contains("\"status\":\"ISSUED\"")
                 .contains("\"balance\":\"550.0000\"")
-                .contains("\"accountId\":\"" + created.id() + "\"");
+                .contains("\"accountId\":\"" + created.id() + "\"")
+                .doesNotContain("settlementReference");
 
         Map<String, Object> settledEvent = eventOfType(contract.id(),
                 "contract.technical-account.settled");
         assertThat(settledEvent.get("aggregate_version")).isEqualTo(3L);
         assertThat((String) settledEvent.get("payload"))
                 .contains("\"status\":\"SETTLED\"")
-                .contains("\"accountNumber\":\"" + created.accountNumber() + "\"");
+                .contains("\"accountNumber\":\"" + created.accountNumber() + "\"")
+                .contains("\"settlementReference\":\"" + SETTLEMENT_REFERENCE + "\"");
+
+        assertThat(settlementReference(created.id())).isEqualTo(SETTLEMENT_REFERENCE);
+        List<ContractTechnicalAccount> listed = accounts.list(TENANT, null, contract.id());
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).settlementReference()).isEqualTo(SETTLEMENT_REFERENCE);
+    }
+
+    @Test
+    void settlementReferenceIsRequiredTrimmedAndLengthChecked() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractTechnicalAccount account = createAccount(contract, Q1_START, Q1_END);
+        updateStatus(contract, account, "ISSUED");
+
+        assertThatThrownBy(() -> updateStatus(contract, account, "SETTLED"))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+        assertThatThrownBy(() -> updateStatus(contract, account, "SETTLED", "   "))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+        String tooLong = "R".repeat(TechnicalAccountRules.SETTLEMENT_REFERENCE_MAX_LENGTH + 1);
+        assertThatThrownBy(() -> updateStatus(contract, account, "SETTLED", tooLong))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+
+        assertThat(accountStatus(account.id())).isEqualTo("ISSUED");
+        assertThat(settlementReference(account.id())).isNull();
+        assertThat(eventCount(contract.id(), "contract.technical-account.settled")).isZero();
+
+        String maxReference = "R".repeat(TechnicalAccountRules.SETTLEMENT_REFERENCE_MAX_LENGTH);
+        ContractTechnicalAccount settled = updateStatus(contract, account, "SETTLED",
+                "  " + maxReference + "  ");
+        assertThat(settled.status()).isEqualTo("SETTLED");
+        assertThat(settled.settlementReference()).isEqualTo(maxReference);
+        assertThat(accountStatus(account.id())).isEqualTo("SETTLED");
+        assertThat(settlementReference(account.id())).isEqualTo(maxReference);
+
+        Map<String, Object> settledEvent = eventOfType(contract.id(),
+                "contract.technical-account.settled");
+        assertThat((String) settledEvent.get("payload"))
+                .contains("\"settlementReference\":\"" + maxReference + "\"");
+    }
+
+    @Test
+    void issueIgnoresTheReference() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractTechnicalAccount account = createAccount(contract, Q1_START, Q1_END);
+        String ignored = "R".repeat(500);
+
+        ContractTechnicalAccount issued = updateStatus(contract, account, "ISSUED", ignored);
+        assertThat(issued.status()).isEqualTo("ISSUED");
+        assertThat(issued.settlementReference()).isNull();
+        assertThat(settlementReference(account.id())).isNull();
+        assertThat((String) eventOfType(contract.id(), "contract.technical-account.issued")
+                .get("payload")).doesNotContain("settlementReference");
     }
 
     @Test
@@ -257,9 +320,28 @@ class TechnicalAccountOutboxIntegrationTest {
                 new BigDecimal("100.0000"), new BigDecimal("50.0000"));
     }
 
+    private ContractTechnicalAccount updateStatus(Contract contract,
+                                                  ContractTechnicalAccount account,
+                                                  String status) {
+        return updateStatus(contract, account, status, null);
+    }
+
+    private ContractTechnicalAccount updateStatus(Contract contract,
+                                                  ContractTechnicalAccount account,
+                                                  String status, String reference) {
+        return accounts.updateStatus(TENANT, null, contract.id(), account.id(),
+                new UpdateTechnicalAccountStatusRequest(status, reference));
+    }
+
     private String accountStatus(UUID accountId) {
         return jdbc.queryForObject(
                 "SELECT status FROM contract_technical_account WHERE id = ?",
+                String.class, accountId);
+    }
+
+    private String settlementReference(UUID accountId) {
+        return jdbc.queryForObject(
+                "SELECT settlement_reference FROM contract_technical_account WHERE id = ?",
                 String.class, accountId);
     }
 

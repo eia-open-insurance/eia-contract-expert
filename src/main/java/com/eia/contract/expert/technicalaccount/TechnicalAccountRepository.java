@@ -19,7 +19,8 @@ public class TechnicalAccountRepository {
 
     private static final String COLUMNS = """
             id, tenant_id, contract_id, account_number, period_start, period_end, currency,
-            ceded_premium, ceded_losses, commission, other_charges, balance, status, created_at
+            ceded_premium, ceded_losses, commission, other_charges, balance, status,
+            settlement_reference, created_at
             """;
 
     private static final RowMapper<ContractTechnicalAccount> MAPPER = (rs, rowNum) ->
@@ -37,6 +38,7 @@ public class TechnicalAccountRepository {
                     rs.getBigDecimal("other_charges"),
                     rs.getBigDecimal("balance"),
                     rs.getString("status"),
+                    rs.getString("settlement_reference"),
                     rs.getTimestamp("created_at").toInstant()
             );
 
@@ -85,14 +87,14 @@ public class TechnicalAccountRepository {
                     INSERT INTO contract_technical_account (
                         id, tenant_id, contract_id, account_number, period_start, period_end,
                         currency, ceded_premium, ceded_losses, commission, other_charges,
-                        balance, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        balance, status, settlement_reference, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     account.id(), account.tenantId(), account.contractId(), account.accountNumber(),
                     account.periodStart(), account.periodEnd(), account.currency(),
                     account.cededPremium(), account.cededLosses(), account.commission(),
                     account.otherCharges(), account.balance(), account.status(),
-                    Timestamp.from(account.createdAt()));
+                    account.settlementReference(), Timestamp.from(account.createdAt()));
         } catch (DuplicateKeyException ex) {
             throw new ContractConflictException("DUPLICATE_TECHNICAL_ACCOUNT_PERIOD",
                     "A technical account already exists for contract period "
@@ -124,16 +126,20 @@ public class TechnicalAccountRepository {
     /**
      * Compares and sets the status so two concurrent transitions cannot both win.
      * A zero-row update means the account disappeared or another request already
-     * moved it; both are reported as a 404 or a 409 by the controller.
+     * moved it; both are reported as a 404 or a 409 by the controller. The
+     * settlement reference is written only on {@code SETTLED}; issuing ignores it.
      */
     public ContractTechnicalAccount updateStatus(UUID tenantId, UUID contractId, UUID id,
                                                  TechnicalAccountStatus expected,
-                                                 TechnicalAccountStatus target) {
+                                                 TechnicalAccountStatus target,
+                                                 String settlementReference) {
+        String storedReference = target == TechnicalAccountStatus.SETTLED
+                ? settlementReference : null;
         int updated = jdbc.update("""
                 UPDATE contract_technical_account
-                   SET status = ?
+                   SET status = ?, settlement_reference = ?
                  WHERE tenant_id = ? AND contract_id = ? AND id = ? AND status = ?
-                """, target.name(), tenantId, contractId, id, expected.name());
+                """, target.name(), storedReference, tenantId, contractId, id, expected.name());
         if (updated == 0) {
             ContractTechnicalAccount current = findById(tenantId, contractId, id)
                     .orElseThrow(() -> new ResourceNotFoundException("Technical account", id));

@@ -54,7 +54,10 @@ premium, `loss` = ceded losses, `commission` = commission, `other` = other
 charges); otherwise the transition is rejected with 409
 `ACCOUNT_LINES_DO_NOT_RECONCILE` and one detail per offending bucket naming the
 contributing line types. An account with no lines keeps the legacy header-only
-issue path.
+issue path. An issued account settles only when the request names the payment
+reference: a non-blank `reference` of at most 120 characters, which is trimmed,
+stored as `settlementReference`, and included in the settled event. `ISSUED`
+ignores the field.
 
 Security/collateral has a public API:
 `GET/POST /api/v1/contracts/{contractId}/security` and

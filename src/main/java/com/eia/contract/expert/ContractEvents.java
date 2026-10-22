@@ -221,6 +221,8 @@ public final class ContractEvents {
      * A technical account is a child aggregate: its own id and lifecycle version,
      * while the contract id stays the outbox partition key. The balance is a
      * decimal string with the sign convention documented on the account record.
+     * The settled fact also carries the settlement reference that closed the
+     * account.
      */
     public static EventEnvelope technicalAccountCreated(
             Contract contract, ContractTechnicalAccount account, Instant now) {
@@ -487,6 +489,9 @@ public final class ContractEvents {
         data.put("currency", account.currency());
         data.put("balance", money(account.balance()));
         data.put("status", account.status());
+        if (TECHNICAL_ACCOUNT_SETTLED.equals(eventType)) {
+            data.put("settlementReference", account.settlementReference());
+        }
 
         long aggregateVersion = TechnicalAccountStatus.valueOf(account.status()).eventVersion();
         UUID eventId = EventIds.deterministic(contract.tenantId(), TECHNICAL_ACCOUNT_AGGREGATE,

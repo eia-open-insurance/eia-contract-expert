@@ -23,6 +23,7 @@ import static com.eia.contract.expert.Fixtures.ACCOUNT_ID;
 import static com.eia.contract.expert.Fixtures.CONTRACT_ID;
 import static com.eia.contract.expert.Fixtures.TENANT;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -40,6 +41,7 @@ class TechnicalAccountControllerTest {
     private static final String PATH = "/api/v1/contracts/{contractId}/technical-accounts";
     private static final String INTERNAL_PATH = "/internal/v1/contracts/{contractId}/technical-accounts";
     private static final UUID OTHER_TENANT = UUID.fromString("99999999-9999-7999-8999-999999999999");
+    private static final String SETTLEMENT_REFERENCE = "BANK-REF-2026-0001";
 
     private static final String CREATE_BODY = """
             {
@@ -236,7 +238,7 @@ class TechnicalAccountControllerTest {
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
-                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED))
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED, null))
                 .thenReturn(Fixtures.technicalAccount("ISSUED"));
 
         mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
@@ -280,7 +282,7 @@ class TechnicalAccountControllerTest {
                 new TechnicalAccountLineRepository.LineTotal(
                         "TAX", new BigDecimal("20.0000"))));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
-                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED))
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED, null))
                 .thenReturn(Fixtures.technicalAccount("ISSUED"));
 
         mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
@@ -326,30 +328,159 @@ class TechnicalAccountControllerTest {
                         .value("FUNDS_WITHHELD, TAX, ADJUSTMENT, OTHER lines total 0.0000 "
                                 + "but otherCharges is 50.0000"));
 
-        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
     @Test
-    void settlesIssuedAccountAndWritesSettledEvent() throws Exception {        contractExists();
+    void settlesAnIssuedAccountWithATrimmedReferenceAndWritesTheEvent() throws Exception {
+        contractExists();
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
-                TechnicalAccountStatus.ISSUED, TechnicalAccountStatus.SETTLED))
-                .thenReturn(Fixtures.technicalAccount("SETTLED"));
+                TechnicalAccountStatus.ISSUED, TechnicalAccountStatus.SETTLED,
+                SETTLEMENT_REFERENCE))
+                .thenReturn(Fixtures.technicalAccount("SETTLED", SETTLEMENT_REFERENCE));
 
         mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
                         .header("X-EIA-Tenant", TENANT.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"status\": \"settled\"}"))
+                        .content("{\"status\": \"settled\", \"reference\": \"  "
+                                + SETTLEMENT_REFERENCE + "  \"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("SETTLED"));
+                .andExpect(jsonPath("$.status").value("SETTLED"))
+                .andExpect(jsonPath("$.settlementReference").value(SETTLEMENT_REFERENCE));
+
+        verify(accounts).updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.ISSUED, TechnicalAccountStatus.SETTLED,
+                SETTLEMENT_REFERENCE);
 
         ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
         verify(outbox).insert(event.capture());
         assertThat(event.getValue().eventType()).isEqualTo("contract.technical-account.settled");
         assertThat(event.getValue().aggregateVersion()).isEqualTo(3L);
-        assertThat(event.getValue().payload()).contains("\"status\":\"SETTLED\"");
+        assertThat(event.getValue().payload())
+                .contains("\"status\":\"SETTLED\"")
+                .contains("\"settlementReference\":\"" + SETTLEMENT_REFERENCE + "\"");
+    }
+
+    @Test
+    void settlesWithAReferenceAtTheMaximumLength() throws Exception {
+        String reference = "R".repeat(TechnicalAccountRules.SETTLEMENT_REFERENCE_MAX_LENGTH);
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
+        when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.ISSUED, TechnicalAccountStatus.SETTLED, reference))
+                .thenReturn(Fixtures.technicalAccount("SETTLED", reference));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \""
+                                + reference + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.settlementReference").value(reference));
+
+        verify(accounts).updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.ISSUED, TechnicalAccountStatus.SETTLED, reference);
+    }
+
+    @Test
+    void rejectsSettlingWithoutAReference() throws Exception {
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"))
+                .andExpect(jsonPath("$.details[0].field").value("reference"));
+
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsSettlingWithABlankReference() throws Exception {
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"));
+
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsASettlementReferenceLongerThanTheMaximum() throws Exception {
+        String reference = "R".repeat(
+                TechnicalAccountRules.SETTLEMENT_REFERENCE_MAX_LENGTH + 1);
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \""
+                                + reference + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"));
+
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void ignoresTheReferenceWhenIssuing() throws Exception {
+        String ignoredReference = "IGNORED".repeat(30);
+        contractExists();
+        when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
+                .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
+        when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED, null))
+                .thenReturn(Fixtures.technicalAccount("ISSUED"));
+
+        mvc.perform(patch(PATH + "/{accountId}/status", CONTRACT_ID, ACCOUNT_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"ISSUED\", \"reference\": \""
+                                + ignoredReference + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ISSUED"))
+                .andExpect(jsonPath("$.settlementReference").value(nullValue()));
+
+        verify(accounts).updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED, null);
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.technical-account.issued");
+        assertThat(event.getValue().payload())
+                .contains("\"status\":\"ISSUED\"")
+                .doesNotContain("settlementReference");
+    }
+
+    @Test
+    void exposesTheSettlementReferenceInTheAccountList() throws Exception {
+        contractExists();
+        when(accounts.findAll(TENANT, CONTRACT_ID)).thenReturn(List.of(
+                Fixtures.technicalAccount("SETTLED", SETTLEMENT_REFERENCE)));
+
+        mvc.perform(get(PATH, CONTRACT_ID).header("X-EIA-Tenant", TENANT.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("SETTLED"))
+                .andExpect(jsonPath("$[0].settlementReference").value(SETTLEMENT_REFERENCE));
     }
 
     @Test
@@ -365,7 +496,7 @@ class TechnicalAccountControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
 
-        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
@@ -398,7 +529,7 @@ class TechnicalAccountControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS"));
 
-        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(accounts, never()).updateStatus(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -478,7 +609,7 @@ class TechnicalAccountControllerTest {
         when(accounts.findById(TENANT, CONTRACT_ID, ACCOUNT_ID))
                 .thenReturn(Optional.of(Fixtures.technicalAccount("DRAFT")));
         when(accounts.updateStatus(TENANT, CONTRACT_ID, ACCOUNT_ID,
-                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED))
+                TechnicalAccountStatus.DRAFT, TechnicalAccountStatus.ISSUED, null))
                 .thenThrow(new ContractConflictException("INVALID_STATUS_TRANSITION",
                         "Technical-account status cannot move from ISSUED to ISSUED"));
 

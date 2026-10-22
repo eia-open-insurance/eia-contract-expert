@@ -111,11 +111,16 @@ public final class Fixtures {
     }
 
     public static ContractTechnicalAccount technicalAccount(String status) {
+        return technicalAccount(status, null);
+    }
+
+    public static ContractTechnicalAccount technicalAccount(String status,
+                                                            String settlementReference) {
         return new ContractTechnicalAccount(ACCOUNT_ID, TENANT, CONTRACT_ID, "TA-2026-00001",
                 LocalDate.of(2026, 1, 1), LocalDate.of(2026, 3, 31), "USD",
                 new BigDecimal("1000.0000"), new BigDecimal("400.0000"),
                 new BigDecimal("100.0000"), new BigDecimal("50.0000"),
-                new BigDecimal("550.0000"), status, NOW);
+                new BigDecimal("550.0000"), status, settlementReference, NOW);
     }
 
     public static ContractTechnicalAccountLine technicalAccountLine(String lineType, String amount) {
