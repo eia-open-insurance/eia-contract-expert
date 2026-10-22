@@ -12,6 +12,7 @@ import java.util.Locale;
 final class CashCallRules {
 
     static final int NOTES_MAX_LENGTH = 4000;
+    static final int SETTLEMENT_REFERENCE_MAX_LENGTH = 120;
 
     private CashCallRules() {
     }
@@ -85,6 +86,21 @@ final class CashCallRules {
                     "status", "Allowed transitions: REQUESTED -> ISSUED or REQUESTED -> CANCELLED; "
                     + "ISSUED -> SETTLED");
         }
+    }
+
+    /**
+     * Settlement captures the payment reference that closed the call, so it is
+     * required for {@code SETTLED} and normalized by trimming. A reference supplied
+     * for any other target status is ignored rather than rejected, because issue and
+     * cancellation do not settle anything.
+     *
+     * @return the trimmed reference for {@code SETTLED}, otherwise {@code null}
+     */
+    static String settlementReference(CashCallStatus target, String raw) {
+        if (target != CashCallStatus.SETTLED) {
+            return null;
+        }
+        return Values.text(raw, "reference", SETTLEMENT_REFERENCE_MAX_LENGTH);
     }
 
     static String notes(String raw) {

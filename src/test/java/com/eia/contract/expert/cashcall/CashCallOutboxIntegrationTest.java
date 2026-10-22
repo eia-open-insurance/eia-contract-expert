@@ -49,6 +49,7 @@ class CashCallOutboxIntegrationTest {
     private static final LocalDate Q2_START = LocalDate.of(2026, 4, 1);
     private static final LocalDate Q2_END = LocalDate.of(2026, 6, 30);
     private static final LocalDate DUE_DATE = LocalDate.of(2026, 4, 15);
+    private static final String SETTLEMENT_REFERENCE = "BANK-REF-2026-0001";
 
     @Autowired
     private ContractController contracts;
@@ -95,6 +96,7 @@ class CashCallOutboxIntegrationTest {
         assertThat(q1.currency()).isEqualTo("USD");
         assertThat(q1.dueDate()).isEqualTo(DUE_DATE);
         assertThat(q1.notes()).isEqualTo("Q1 cash call");
+        assertThat(q1.settlementReference()).isNull();
 
         Map<String, Object> event = eventOfType(contract.id(),
                 "contract.cash-call.requested");
@@ -117,7 +119,8 @@ class CashCallOutboxIntegrationTest {
                 .contains("\"amount\":\"250000.0000\"")
                 .contains("\"currency\":\"USD\"")
                 .contains("\"dueDate\":\"2026-04-15\"")
-                .contains("\"status\":\"REQUESTED\"");
+                .contains("\"status\":\"REQUESTED\"")
+                .doesNotContain("settlementReference");
 
         ContractCashCall q2 = createCashCall(contract, Q2_START, Q2_END);
         assertThat(q2.callNumber()).isNotEqualTo(q1.callNumber());
@@ -138,37 +141,110 @@ class CashCallOutboxIntegrationTest {
 
         ContractCashCall afterIssue = updateStatus(contract, issued, "ISSUED");
         assertThat(afterIssue.status()).isEqualTo("ISSUED");
-        ContractCashCall afterSettle = updateStatus(contract, issued, "SETTLED");
+        assertThat(afterIssue.settlementReference()).isNull();
+        ContractCashCall afterSettle = updateStatus(contract, issued, "SETTLED",
+                "  " + SETTLEMENT_REFERENCE + "  ");
         assertThat(afterSettle.status()).isEqualTo("SETTLED");
+        assertThat(afterSettle.settlementReference()).isEqualTo(SETTLEMENT_REFERENCE);
         ContractCashCall afterCancel = updateStatus(contract, cancelled, "CANCELLED");
         assertThat(afterCancel.status()).isEqualTo("CANCELLED");
+        assertThat(afterCancel.settlementReference()).isNull();
 
         Map<String, Object> issuedEvent = eventOfType(contract.id(),
                 "contract.cash-call.issued");
         assertThat(issuedEvent.get("aggregate_version")).isEqualTo(2L);
         assertThat((String) issuedEvent.get("payload"))
                 .contains("\"cashCallId\":\"" + issued.id() + "\"")
-                .contains("\"status\":\"ISSUED\"");
+                .contains("\"status\":\"ISSUED\"")
+                .doesNotContain("settlementReference");
 
         Map<String, Object> settledEvent = eventOfType(contract.id(),
                 "contract.cash-call.settled");
         assertThat(settledEvent.get("aggregate_version")).isEqualTo(3L);
         assertThat((String) settledEvent.get("payload"))
                 .contains("\"callNumber\":\"" + issued.callNumber() + "\"")
-                .contains("\"status\":\"SETTLED\"");
+                .contains("\"status\":\"SETTLED\"")
+                .contains("\"settlementReference\":\"" + SETTLEMENT_REFERENCE + "\"");
 
         Map<String, Object> cancelledEvent = eventOfType(contract.id(),
                 "contract.cash-call.cancelled");
         assertThat(cancelledEvent.get("aggregate_version")).isEqualTo(2L);
         assertThat((String) cancelledEvent.get("payload"))
                 .contains("\"cashCallId\":\"" + cancelled.id() + "\"")
-                .contains("\"status\":\"CANCELLED\"");
+                .contains("\"status\":\"CANCELLED\"")
+                .doesNotContain("settlementReference");
 
         assertThat(cashCallStatus(issued.id())).isEqualTo("SETTLED");
+        assertThat(settlementReference(issued.id())).isEqualTo(SETTLEMENT_REFERENCE);
         assertThat(cashCallStatus(cancelled.id())).isEqualTo("CANCELLED");
+        assertThat(settlementReference(cancelled.id())).isNull();
         assertThat(eventCount(contract.id(), "contract.cash-call.issued")).isEqualTo(1);
         assertThat(eventCount(contract.id(), "contract.cash-call.settled")).isEqualTo(1);
         assertThat(eventCount(contract.id(), "contract.cash-call.cancelled")).isEqualTo(1);
+    }
+
+    @Test
+    void settlementReferenceIsRequiredTrimmedAndLengthChecked() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        ContractCashCall cashCall = createCashCall(contract, Q1_START, Q1_END);
+        updateStatus(contract, cashCall, "ISSUED");
+
+        assertThatThrownBy(() -> updateStatus(contract, cashCall, "SETTLED"))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+        assertThatThrownBy(() -> updateStatus(contract, cashCall, "SETTLED", "   "))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+        String tooLong = "R".repeat(CashCallRules.SETTLEMENT_REFERENCE_MAX_LENGTH + 1);
+        assertThatThrownBy(() -> updateStatus(contract, cashCall, "SETTLED", tooLong))
+                .isInstanceOf(ContractValidationException.class)
+                .satisfies(ex -> assertThat(((ContractValidationException) ex).code())
+                        .isEqualTo("INVALID_REFERENCE"));
+
+        assertThat(cashCallStatus(cashCall.id())).isEqualTo("ISSUED");
+        assertThat(settlementReference(cashCall.id())).isNull();
+        assertThat(eventCount(contract.id(), "contract.cash-call.settled")).isZero();
+
+        String maxReference = "R".repeat(CashCallRules.SETTLEMENT_REFERENCE_MAX_LENGTH);
+        ContractCashCall settled = updateStatus(contract, cashCall, "SETTLED",
+                "  " + maxReference + "  ");
+        assertThat(settled.status()).isEqualTo("SETTLED");
+        assertThat(settled.settlementReference()).isEqualTo(maxReference);
+        assertThat(cashCallStatus(cashCall.id())).isEqualTo("SETTLED");
+        assertThat(settlementReference(cashCall.id())).isEqualTo(maxReference);
+
+        Map<String, Object> settledEvent = eventOfType(contract.id(),
+                "contract.cash-call.settled");
+        assertThat((String) settledEvent.get("payload"))
+                .contains("\"settlementReference\":\"" + maxReference + "\"");
+
+        List<ContractCashCall> listed = cashCalls.list(TENANT, null, contract.id());
+        assertThat(listed).hasSize(1);
+        assertThat(listed.get(0).settlementReference()).isEqualTo(maxReference);
+    }
+
+    @Test
+    void issueAndCancelIgnoreTheReference() {
+        Contract contract = createContract(CONTRACT_NUMBER);
+        String ignored = "R".repeat(500);
+
+        ContractCashCall toIssue = createCashCall(contract, Q1_START, Q1_END);
+        ContractCashCall afterIssue = updateStatus(contract, toIssue, "ISSUED", ignored);
+        assertThat(afterIssue.status()).isEqualTo("ISSUED");
+        assertThat(afterIssue.settlementReference()).isNull();
+        assertThat(settlementReference(toIssue.id())).isNull();
+        assertThat((String) eventOfType(contract.id(), "contract.cash-call.issued")
+                .get("payload")).doesNotContain("settlementReference");
+
+        ContractCashCall toCancel = createCashCall(contract, Q2_START, Q2_END);
+        ContractCashCall afterCancel = updateStatus(contract, toCancel, "CANCELLED", ignored);
+        assertThat(afterCancel.status()).isEqualTo("CANCELLED");
+        assertThat(afterCancel.settlementReference()).isNull();
+        assertThat(settlementReference(toCancel.id())).isNull();
+        assertThat((String) eventOfType(contract.id(), "contract.cash-call.cancelled")
+                .get("payload")).doesNotContain("settlementReference");
     }
 
     @Test
@@ -190,7 +266,7 @@ class CashCallOutboxIntegrationTest {
                 .isInstanceOf(ContractConflictException.class);
         assertThat(cashCallStatus(issued.id())).isEqualTo("ISSUED");
 
-        updateStatus(contract, issued, "SETTLED");
+        updateStatus(contract, issued, "SETTLED", SETTLEMENT_REFERENCE);
         assertThatThrownBy(() -> updateStatus(contract, issued, "ISSUED"))
                 .isInstanceOf(ContractConflictException.class);
         assertThatThrownBy(() -> updateStatus(contract, issued, "CANCELLED"))
@@ -311,8 +387,13 @@ class CashCallOutboxIntegrationTest {
 
     private ContractCashCall updateStatus(Contract contract, ContractCashCall cashCall,
                                           String status) {
+        return updateStatus(contract, cashCall, status, null);
+    }
+
+    private ContractCashCall updateStatus(Contract contract, ContractCashCall cashCall,
+                                          String status, String reference) {
         return cashCalls.updateStatus(TENANT, null, contract.id(), cashCall.id(),
-                new UpdateCashCallStatusRequest(status));
+                new UpdateCashCallStatusRequest(status, reference));
     }
 
     private static CreateCashCallRequest request(LocalDate start, LocalDate end) {
@@ -323,6 +404,12 @@ class CashCallOutboxIntegrationTest {
     private String cashCallStatus(UUID cashCallId) {
         return jdbc.queryForObject(
                 "SELECT status FROM contract_cash_call WHERE id = ?",
+                String.class, cashCallId);
+    }
+
+    private String settlementReference(UUID cashCallId) {
+        return jdbc.queryForObject(
+                "SELECT settlement_reference FROM contract_cash_call WHERE id = ?",
                 String.class, cashCallId);
     }
 

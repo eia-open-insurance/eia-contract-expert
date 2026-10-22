@@ -27,6 +27,13 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   statuses are immutable. Period, strictly positive amount, due date, and
   currency are validated, and every transition writes its
   `contract.cash-call.*` event through the transactional outbox.
+- Cash-call settlement references: `contract_cash_call` gains a nullable
+  `settlement_reference` (`varchar(120)`, added by idempotent DDL). The status
+  request accepts an optional `reference`, and `ContractCashCall` exposes it as
+  `settlementReference`. Settling requires a non-blank reference, trimmed and
+  capped at 120 characters; it is stored and added to the
+  `contract.cash-call.settled` payload. `ISSUED` and `CANCELLED` ignore the
+  reference.
 - Security/collateral: the public
   `GET/POST /api/v1/contracts/{contractId}/security` endpoints record a security
   type, a strictly positive required amount, non-negative held collateral, the
@@ -100,7 +107,7 @@ The format is based on Keep a Changelog and the project uses Semantic Versioning
   the aggregate transaction.
 - Quartz outbox dispatch job, enabled only when `eia.outbox.enabled=true`, plus
   the `eia.outbox` configuration block.
-- 292 JUnit tests, including outbox payload, rollback, failure-atomicity,
+- 323 JUnit tests, including outbox payload, rollback, failure-atomicity,
   security lifecycle, technical-account line reconciliation, bordereau and
   cash-call lifecycle, and scheduling tests.
 

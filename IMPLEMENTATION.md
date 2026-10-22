@@ -19,7 +19,7 @@ what remains.
 | Period bordereaux | `contract_bordereau` (`period_start` set), `GET/POST /api/v1/contracts/{id}/bordereaux`, `PATCH .../{bordereauId}/status` | period start before end; non-negative declared premium, loss, commission, and other charges; non-negative line count; three-letter currency; unique period per tenant and contract; `RECEIVED -> PROCESSED` creates or reuses the matching technical account and links it; `RECEIVED -> FAILED` records the failure; terminal statuses are immutable; tenant/contract wall |
 | Commutation | `contract_commutation`, `GET/POST .../commutations`, `POST .../{id}/approve`, `POST .../{id}/execute` | COM-01 approval before execution; CTR-12 release document required; FULL commutation walks COMMUTED -> CLOSED and releases security; one executed commutation per contract |
 | Technical accounts | `contract_technical_account`, `contract_technical_account_line`, `GET/POST /api/v1/contracts/{id}/technical-accounts`, `PATCH .../{accountId}/status`, `GET/POST .../{accountId}/lines`, `DELETE .../{accountId}/lines/{lineId}` | unique period per tenant and contract; `periodStart < periodEnd`; non-negative amounts; three-letter currency; derived balance; lines editable only while DRAFT; issuing with any lines requires each bucket total to equal its header component (CTR-08); DRAFT -> ISSUED -> SETTLED; tenant/contract wall |
-| Cash calls | `contract_cash_call`, `GET/POST /api/v1/contracts/{id}/cash-calls`, `PATCH .../{cashCallId}/status` | period start before end; amount strictly positive; due date required; three-letter currency; unique call number per tenant and contract; REQUESTED -> ISSUED -> SETTLED or REQUESTED -> CANCELLED; terminal statuses immutable; tenant/contract wall |
+| Cash calls | `contract_cash_call`, `GET/POST /api/v1/contracts/{id}/cash-calls`, `PATCH .../{cashCallId}/status` | period start before end; amount strictly positive; due date required; three-letter currency; unique call number per tenant and contract; REQUESTED -> ISSUED -> SETTLED or REQUESTED -> CANCELLED; SETTLED requires a non-blank settlement reference (trimmed, <= 120 characters); ISSUED and CANCELLED ignore the reference; terminal statuses immutable; tenant/contract wall |
 | Bind | `GET .../bind-eligibility`, `POST .../bind` | every precondition is evaluated and reported; bind requires an approver (CTR-15) and is written atomically with the checks under `SELECT ... FOR UPDATE` |
 | Transactional outbox | `outbox_event` | the contract/cession write and its canonical event are committed or rolled back together (SPEC 7.5.1) |
 
@@ -103,7 +103,8 @@ payloads carry
 declared amounts, `lineCount`, and — once linked — `technicalAccountId`. Cash-call
 payloads carry `contractId`, `contractNumber`, `cashCallId`, `callNumber`,
 `period` (a `start`/`end` object), `periodStart`, `periodEnd`, `amount`,
-`currency`, `dueDate`, and `status`. Security payloads carry `contractId`,
+`currency`, `dueDate`, and `status`; the settled payload additionally carries
+`settlementReference`. Security payloads carry `contractId`,
 `securityId`, `securityType`, `requiredAmount`, `heldAmount`, `currency`, and
 `status`; the status-changed payload carries `contractId`, `securityId`,
 `securityType`, `previousStatus`, and `status`. Money and percentages are decimal
@@ -214,7 +215,12 @@ written even when dispatch is disabled, so no event is lost.
   comes from `X-EIA-Tenant` or `tenantId`, as for the other child slices. A cash
   call may be cancelled only while it is still `REQUESTED`; once issued it can
   only settle, and both terminal statuses are immutable (409
-  `INVALID_STATUS_TRANSITION`). The due date is required but is not constrained
+  `INVALID_STATUS_TRANSITION`). A settlement must name the payment reference that
+  closed the call: the reference is trimmed, required to be non-blank, capped at
+  120 characters, stored on the row, and published in the settled event; a
+  missing, blank, or over-long reference is 400 `INVALID_REFERENCE`. The
+  `ISSUED` and `CANCELLED` transitions ignore any reference the caller supplies.
+  The due date is required but is not constrained
   against the period, because a call may be payable after the period closes.
 - **Security status action.** The public lifecycle action is the brief's
   `PATCH .../security/{securityId}/status` rather than SPEC 11.3.10's
@@ -257,7 +263,7 @@ written even when dispatch is disabled, so no event is lost.
   `TechnicalAccountLineOutboxIntegrationTest`,
   `BordereauOutboxIntegrationTest`, `CashCallOutboxIntegrationTest`,
   `ContractSecurityOutboxIntegrationTest`,
-  `ContractSecurityOutboxFailureRollbackTest` — 292 tests, run with
+  `ContractSecurityOutboxFailureRollbackTest` — 323 tests, run with
   `./gradlew test`.
 - `ContractOutboxIntegrationTest` proves the event payloads for create, bind,
   cession, and commutation, the catalog lifecycle event for a status change, and
@@ -276,8 +282,9 @@ written even when dispatch is disabled, so no event is lost.
   tenant/contract wall, and create/process rollback with their events.
   `CashCallOutboxIntegrationTest` proves creation, newest-first listing, unique
   call numbers per contract, REQUESTED -> ISSUED -> SETTLED and
-  REQUESTED -> CANCELLED with their events, invalid and terminal transitions, the
-  tenant/contract wall, and create/status rollback.
+  REQUESTED -> CANCELLED with their events, settlement-reference requirement,
+  trimming and length boundary, issue/cancel ignoring the reference, invalid and
+  terminal transitions, the tenant/contract wall, and create/status rollback.
   `ContractSecurityOutboxIntegrationTest` proves creation with the derived
   ACTIVE/EXPIRED status, newest-first listing with the public fields, validation,
   the tenant/contract wall, the `contract.security.recorded` event, and create

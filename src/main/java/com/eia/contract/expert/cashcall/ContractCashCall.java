@@ -16,8 +16,11 @@ import java.util.UUID;
  * contract. The amount is stored as {@code numeric(19,4)} and exposed as a
  * decimal string (SPEC 10.3); it must be strictly positive. The lifecycle is
  * {@code REQUESTED -> ISSUED -> SETTLED} or {@code REQUESTED -> CANCELLED}, with
- * both terminal statuses immutable. The status values, the period, and the
- * positive amount are enforced by the database as well as by the API.</p>
+ * both terminal statuses immutable. Settlement captures the payment reference
+ * that closed the call; it is required on the SETTLED transition and ignored by
+ * the other transitions. The status values, the period, the positive amount, and
+ * the settlement-reference length are enforced by the database as well as by the
+ * API.</p>
  */
 public record ContractCashCall(
         UUID id,
@@ -31,6 +34,7 @@ public record ContractCashCall(
         LocalDate dueDate,
         String status,
         String notes,
+        String settlementReference,
         Instant createdAt
 ) {
 
@@ -46,6 +50,7 @@ public record ContractCashCall(
             String notes) {
         return new ContractCashCall(
                 UUID.randomUUID(), tenantId, contractId, callNumber, periodStart, periodEnd,
-                amount, currency, dueDate, CashCallStatus.REQUESTED.name(), notes, Instant.now());
+                amount, currency, dueDate, CashCallStatus.REQUESTED.name(), notes, null,
+                Instant.now());
     }
 }

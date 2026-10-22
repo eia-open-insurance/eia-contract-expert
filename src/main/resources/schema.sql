@@ -533,6 +533,7 @@ CREATE TABLE IF NOT EXISTS contract_cash_call (
     due_date DATE NOT NULL,
     status VARCHAR(16) NOT NULL,
     notes TEXT,
+    settlement_reference VARCHAR(120),
     created_at TIMESTAMPTZ NOT NULL,
     CONSTRAINT uq_contract_cash_call_number UNIQUE (tenant_id, contract_id, call_number),
     CONSTRAINT ck_contract_cash_call_period CHECK (period_start < period_end),
@@ -547,6 +548,12 @@ CREATE TABLE IF NOT EXISTS contract_cash_call (
 
 CREATE INDEX IF NOT EXISTS ix_contract_cash_call_contract
     ON contract_cash_call (tenant_id, contract_id, created_at);
+
+-- The settlement reference is captured by the SETTLED transition. The ALTER keeps
+-- a database created by the first cash-call slice forward, because
+-- CREATE TABLE IF NOT EXISTS does not add a column to an existing table.
+ALTER TABLE contract_cash_call
+    ADD COLUMN IF NOT EXISTS settlement_reference VARCHAR(120);
 
 -- Transactional outbox (SPEC 7.5.1). The canonical copy lives in
 -- eia-platform/libs/src/main/resources/db/outbox_event.sql; keep both in sync.

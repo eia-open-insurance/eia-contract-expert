@@ -83,7 +83,10 @@ Cash calls have their own public API:
 `/internal/v1`). A cash call is requested with a contract period, a strictly
 positive amount, a currency, and a due date; its generated call number (`CC`) is
 unique per tenant and contract. `REQUESTED` may become `ISSUED` or `CANCELLED`,
-and `ISSUED` may become `SETTLED`; terminal statuses are immutable.
+and `ISSUED` may become `SETTLED`; terminal statuses are immutable. Settling
+requires a non-blank `reference` of at most 120 characters, which is trimmed,
+stored as `settlementReference`, and included in the settled event; `ISSUED` and
+`CANCELLED` ignore the field.
 
 Bind is a guarded command with an approver; `PATCH /{id}/status` no longer accepts
 `BOUND`. Layer overlaps, share totals, required terms, over-collateralisation,

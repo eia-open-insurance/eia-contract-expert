@@ -130,10 +130,14 @@ public final class Fixtures {
     }
 
     public static ContractCashCall cashCall(String status) {
+        return cashCall(status, null);
+    }
+
+    public static ContractCashCall cashCall(String status, String settlementReference) {
         return new ContractCashCall(CASH_CALL_ID, TENANT, CONTRACT_ID, "CC-2026-00001",
                 LocalDate.of(2026, 1, 1), LocalDate.of(2026, 3, 31),
                 new BigDecimal("250000.0000"), "USD", LocalDate.of(2026, 4, 15),
-                status, "Q1 cash call", NOW);
+                status, "Q1 cash call", settlementReference, NOW);
     }
 
     public static ContractCommutation commutation(String status, String type) {

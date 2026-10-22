@@ -285,7 +285,8 @@ public final class ContractEvents {
      * requested, 2 issued or cancelled, 3 settled), while the contract id stays
      * the outbox partition key. The payload carries the contract and cash-call
      * identity, the period as both a nested object and flat dates, the requested
-     * amount as a decimal string, the currency, the due date, and the status.
+     * amount as a decimal string, the currency, the due date, and the status. The
+     * settled fact also carries the settlement reference that closed the call.
      */
     public static EventEnvelope cashCallRequested(
             Contract contract, ContractCashCall cashCall, Instant now) {
@@ -396,6 +397,9 @@ public final class ContractEvents {
         data.put("currency", cashCall.currency());
         data.put("dueDate", date(cashCall.dueDate()));
         data.put("status", cashCall.status());
+        if (CASH_CALL_SETTLED.equals(eventType)) {
+            data.put("settlementReference", cashCall.settlementReference());
+        }
 
         long aggregateVersion = CashCallStatus.valueOf(cashCall.status()).eventVersion();
         UUID eventId = EventIds.deterministic(contract.tenantId(), CASH_CALL_AGGREGATE,

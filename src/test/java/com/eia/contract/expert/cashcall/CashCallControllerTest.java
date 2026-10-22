@@ -22,6 +22,7 @@ import static com.eia.contract.expert.Fixtures.CASH_CALL_ID;
 import static com.eia.contract.expert.Fixtures.CONTRACT_ID;
 import static com.eia.contract.expert.Fixtures.TENANT;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.hamcrest.Matchers.nullValue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -38,6 +39,7 @@ class CashCallControllerTest {
     private static final String PATH = "/api/v1/contracts/{contractId}/cash-calls";
     private static final String INTERNAL_PATH = "/internal/v1/contracts/{contractId}/cash-calls";
     private static final UUID OTHER_TENANT = UUID.fromString("99999999-9999-7999-8999-999999999999");
+    private static final String SETTLEMENT_REFERENCE = "BANK-REF-2026-0001";
 
     private static final String CREATE_BODY = """
             {
@@ -94,7 +96,8 @@ class CashCallControllerTest {
                 .andExpect(jsonPath("$.amount").value("250000.0000"))
                 .andExpect(jsonPath("$.currency").value("USD"))
                 .andExpect(jsonPath("$.dueDate").value("2026-04-15"))
-                .andExpect(jsonPath("$.notes").value("Q1 cash call"));
+                .andExpect(jsonPath("$.notes").value("Q1 cash call"))
+                .andExpect(jsonPath("$.settlementReference").value(nullValue()));
 
         ArgumentCaptor<ContractCashCall> cashCall = ArgumentCaptor.forClass(
                 ContractCashCall.class);
@@ -138,6 +141,18 @@ class CashCallControllerTest {
                 .andExpect(jsonPath("$[0].status").value("REQUESTED"))
                 .andExpect(jsonPath("$[0].amount").value("250000.0000"))
                 .andExpect(jsonPath("$[0].dueDate").value("2026-04-15"));
+    }
+
+    @Test
+    void returnsTheSettlementReferenceInTheCashCallDto() throws Exception {
+        contractExists();
+        when(cashCalls.findAll(TENANT, CONTRACT_ID))
+                .thenReturn(List.of(Fixtures.cashCall("SETTLED", SETTLEMENT_REFERENCE)));
+
+        mvc.perform(get(PATH, CONTRACT_ID).header("X-EIA-Tenant", TENANT.toString()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$[0].status").value("SETTLED"))
+                .andExpect(jsonPath("$[0].settlementReference").value(SETTLEMENT_REFERENCE));
     }
 
     @Test
@@ -250,7 +265,7 @@ class CashCallControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS"));
 
-        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -266,7 +281,7 @@ class CashCallControllerTest {
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS"));
 
-        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -275,7 +290,7 @@ class CashCallControllerTest {
         when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
                 .thenReturn(Optional.of(Fixtures.cashCall("REQUESTED")));
         when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
-                CashCallStatus.REQUESTED, CashCallStatus.ISSUED))
+                CashCallStatus.REQUESTED, CashCallStatus.ISSUED, null))
                 .thenReturn(Fixtures.cashCall("ISSUED"));
 
         mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
@@ -297,26 +312,107 @@ class CashCallControllerTest {
     }
 
     @Test
-    void settlesAnIssuedCashCallAndWritesTheSettledEvent() throws Exception {
+    void settlesAnIssuedCashCallWithATrimmedReferenceAndWritesTheEvent() throws Exception {
         contractExists();
         when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
                 .thenReturn(Optional.of(Fixtures.cashCall("ISSUED")));
         when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
-                CashCallStatus.ISSUED, CashCallStatus.SETTLED))
-                .thenReturn(Fixtures.cashCall("SETTLED"));
+                CashCallStatus.ISSUED, CashCallStatus.SETTLED, SETTLEMENT_REFERENCE))
+                .thenReturn(Fixtures.cashCall("SETTLED", SETTLEMENT_REFERENCE));
 
         mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
                         .header("X-EIA-Tenant", TENANT.toString())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"status\": \"SETTLED\"}"))
+                        .content("{\"status\": \"SETTLED\", \"reference\": \"  "
+                                + SETTLEMENT_REFERENCE + "  \"}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.status").value("SETTLED"));
+                .andExpect(jsonPath("$.status").value("SETTLED"))
+                .andExpect(jsonPath("$.settlementReference").value(SETTLEMENT_REFERENCE));
+
+        verify(cashCalls).updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.ISSUED, CashCallStatus.SETTLED, SETTLEMENT_REFERENCE);
 
         ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
         verify(outbox).insert(event.capture());
         assertThat(event.getValue().eventType()).isEqualTo("contract.cash-call.settled");
         assertThat(event.getValue().aggregateVersion()).isEqualTo(3L);
-        assertThat(event.getValue().payload()).contains("\"status\":\"SETTLED\"");
+        assertThat(event.getValue().payload())
+                .contains("\"status\":\"SETTLED\"")
+                .contains("\"settlementReference\":\"" + SETTLEMENT_REFERENCE + "\"");
+    }
+
+    @Test
+    void settlesWithAReferenceAtTheMaximumLength() throws Exception {
+        String reference = "R".repeat(CashCallRules.SETTLEMENT_REFERENCE_MAX_LENGTH);
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("ISSUED")));
+        when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.ISSUED, CashCallStatus.SETTLED, reference))
+                .thenReturn(Fixtures.cashCall("SETTLED", reference));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \"" + reference + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.settlementReference").value(reference));
+
+        verify(cashCalls).updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.ISSUED, CashCallStatus.SETTLED, reference);
+    }
+
+    @Test
+    void rejectsSettlingWithoutAReference() throws Exception {
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"))
+                .andExpect(jsonPath("$.details[0].field").value("reference"));
+
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsSettlingWithABlankReference() throws Exception {
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \"   \"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"));
+
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
+    }
+
+    @Test
+    void rejectsASettlementReferenceLongerThanTheMaximum() throws Exception {
+        String reference = "R".repeat(CashCallRules.SETTLEMENT_REFERENCE_MAX_LENGTH + 1);
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("ISSUED")));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"SETTLED\", \"reference\": \"" + reference + "\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_REFERENCE"));
+
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
+        verify(outbox, never()).insert(any());
     }
 
     @Test
@@ -325,7 +421,7 @@ class CashCallControllerTest {
         when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
                 .thenReturn(Optional.of(Fixtures.cashCall("REQUESTED")));
         when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
-                CashCallStatus.REQUESTED, CashCallStatus.CANCELLED))
+                CashCallStatus.REQUESTED, CashCallStatus.CANCELLED, null))
                 .thenReturn(Fixtures.cashCall("CANCELLED"));
 
         mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
@@ -343,6 +439,66 @@ class CashCallControllerTest {
     }
 
     @Test
+    void ignoresTheReferenceWhenIssuing() throws Exception {
+        String ignoredReference = "IGNORED".repeat(30);
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("REQUESTED")));
+        when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.REQUESTED, CashCallStatus.ISSUED, null))
+                .thenReturn(Fixtures.cashCall("ISSUED"));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"ISSUED\", \"reference\": \""
+                                + ignoredReference + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("ISSUED"))
+                .andExpect(jsonPath("$.settlementReference").value(nullValue()));
+
+        verify(cashCalls).updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.REQUESTED, CashCallStatus.ISSUED, null);
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.cash-call.issued");
+        assertThat(event.getValue().payload())
+                .contains("\"status\":\"ISSUED\"")
+                .doesNotContain("settlementReference");
+    }
+
+    @Test
+    void ignoresTheReferenceWhenCancelling() throws Exception {
+        String ignoredReference = "IGNORED".repeat(30);
+        contractExists();
+        when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
+                .thenReturn(Optional.of(Fixtures.cashCall("REQUESTED")));
+        when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.REQUESTED, CashCallStatus.CANCELLED, null))
+                .thenReturn(Fixtures.cashCall("CANCELLED"));
+
+        mvc.perform(patch(PATH + "/{cashCallId}/status", CONTRACT_ID, CASH_CALL_ID)
+                        .header("X-EIA-Tenant", TENANT.toString())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"CANCELLED\", \"reference\": \""
+                                + ignoredReference + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.status").value("CANCELLED"))
+                .andExpect(jsonPath("$.settlementReference").value(nullValue()));
+
+        verify(cashCalls).updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
+                CashCallStatus.REQUESTED, CashCallStatus.CANCELLED, null);
+
+        ArgumentCaptor<OutboxEvent> event = ArgumentCaptor.forClass(OutboxEvent.class);
+        verify(outbox).insert(event.capture());
+        assertThat(event.getValue().eventType()).isEqualTo("contract.cash-call.cancelled");
+        assertThat(event.getValue().payload())
+                .contains("\"status\":\"CANCELLED\"")
+                .doesNotContain("settlementReference");
+    }
+
+    @Test
     void rejectsSettlingARequestedCashCall() throws Exception {
         contractExists();
         when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
@@ -355,7 +511,7 @@ class CashCallControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
 
-        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
@@ -372,7 +528,7 @@ class CashCallControllerTest {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value("INVALID_STATUS_TRANSITION"));
 
-        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
@@ -448,7 +604,7 @@ class CashCallControllerTest {
 
         verify(cashCalls, never()).findAll(any(), any());
         verify(cashCalls, never()).create(any());
-        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any());
+        verify(cashCalls, never()).updateStatus(any(), any(), any(), any(), any(), any());
         verify(outbox, never()).insert(any());
     }
 
@@ -483,7 +639,7 @@ class CashCallControllerTest {
         when(cashCalls.findById(TENANT, CONTRACT_ID, CASH_CALL_ID))
                 .thenReturn(Optional.of(Fixtures.cashCall("REQUESTED")));
         when(cashCalls.updateStatus(TENANT, CONTRACT_ID, CASH_CALL_ID,
-                CashCallStatus.REQUESTED, CashCallStatus.ISSUED))
+                CashCallStatus.REQUESTED, CashCallStatus.ISSUED, null))
                 .thenThrow(new ContractConflictException("INVALID_STATUS_TRANSITION",
                         "Cash-call status cannot move from ISSUED to ISSUED"));
 

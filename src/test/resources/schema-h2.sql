@@ -308,6 +308,7 @@ CREATE TABLE IF NOT EXISTS contract_cash_call (
     due_date DATE NOT NULL,
     status VARCHAR(16) NOT NULL,
     notes TEXT,
+    settlement_reference VARCHAR(120),
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     CONSTRAINT uq_contract_cash_call_number UNIQUE (tenant_id, contract_id, call_number),
     CONSTRAINT ck_contract_cash_call_period CHECK (period_start < period_end),
@@ -321,6 +322,11 @@ CREATE TABLE IF NOT EXISTS contract_cash_call (
 
 CREATE INDEX IF NOT EXISTS ix_contract_cash_call_contract
     ON contract_cash_call (tenant_id, contract_id, created_at);
+
+-- H2 keeps the same upgrade path as PostgreSQL so the schema file is safe to
+-- re-apply to a database created before the settlement-reference slice.
+ALTER TABLE contract_cash_call
+    ADD COLUMN IF NOT EXISTS settlement_reference VARCHAR(120);
 
 -- Shared by the legacy ingest header and the period-bordereau lifecycle. The
 -- legacy columns are nullable because a period bordereau sets only the

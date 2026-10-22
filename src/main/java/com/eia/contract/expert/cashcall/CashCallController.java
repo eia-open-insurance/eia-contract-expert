@@ -114,9 +114,12 @@ public class CashCallController {
         CashCallStatus from = CashCallRules.currentStatus(current.status());
         CashCallStatus target = CashCallRules.parseTargetStatus(request.status());
         CashCallRules.validateTransition(from, target);
+        // Settlement requires the payment reference; issue and cancellation ignore
+        // any reference the caller sends because they do not settle the call.
+        String settlementReference = CashCallRules.settlementReference(target, request.reference());
 
         ContractCashCall updated = cashCalls.updateStatus(
-                tenantId, contractId, cashCallId, from, target);
+                tenantId, contractId, cashCallId, from, target, settlementReference);
         Instant now = Instant.now();
         EventEnvelope event = switch (target) {
             case ISSUED -> ContractEvents.cashCallIssued(contract, updated, now);

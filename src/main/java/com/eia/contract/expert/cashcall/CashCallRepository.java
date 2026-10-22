@@ -27,7 +27,7 @@ public class CashCallRepository {
 
     private static final String COLUMNS = """
             id, tenant_id, contract_id, call_number, period_start, period_end, amount,
-            currency, due_date, status, notes, created_at
+            currency, due_date, status, notes, settlement_reference, created_at
             """;
 
     private static final RowMapper<ContractCashCall> MAPPER = (rs, rowNum) ->
@@ -43,6 +43,7 @@ public class CashCallRepository {
                     rs.getObject("due_date", LocalDate.class),
                     rs.getString("status"),
                     rs.getString("notes"),
+                    rs.getString("settlement_reference"),
                     rs.getTimestamp("created_at").toInstant()
             );
 
@@ -75,13 +76,15 @@ public class CashCallRepository {
             jdbc.update("""
                     INSERT INTO contract_cash_call (
                         id, tenant_id, contract_id, call_number, period_start, period_end,
-                        amount, currency, due_date, status, notes, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        amount, currency, due_date, status, notes, settlement_reference,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     cashCall.id(), cashCall.tenantId(), cashCall.contractId(),
                     cashCall.callNumber(), cashCall.periodStart(), cashCall.periodEnd(),
                     cashCall.amount(), cashCall.currency(), cashCall.dueDate(),
-                    cashCall.status(), cashCall.notes(), Timestamp.from(cashCall.createdAt()));
+                    cashCall.status(), cashCall.notes(), cashCall.settlementReference(),
+                    Timestamp.from(cashCall.createdAt()));
         } catch (DuplicateKeyException ex) {
             throw new ContractConflictException("DUPLICATE_CASH_CALL_NUMBER",
                     "Cash call " + cashCall.callNumber()
@@ -95,15 +98,19 @@ public class CashCallRepository {
     /**
      * Compares and sets the status so two concurrent transitions cannot both win.
      * A zero-row update means the cash call disappeared or another request already
-     * moved it; both are reported as a 404 or a 409 by the controller.
+     * moved it; both are reported as a 404 or a 409 by the controller. The
+     * settlement reference is written only on {@code SETTLED}; issue and
+     * cancellation ignore it.
      */
     public ContractCashCall updateStatus(UUID tenantId, UUID contractId, UUID id,
-                                        CashCallStatus expected, CashCallStatus target) {
+                                        CashCallStatus expected, CashCallStatus target,
+                                        String settlementReference) {
+        String storedReference = target == CashCallStatus.SETTLED ? settlementReference : null;
         int updated = jdbc.update("""
                 UPDATE contract_cash_call
-                   SET status = ?
+                   SET status = ?, settlement_reference = ?
                  WHERE tenant_id = ? AND contract_id = ? AND id = ? AND status = ?
-                """, target.name(), tenantId, contractId, id, expected.name());
+                """, target.name(), storedReference, tenantId, contractId, id, expected.name());
         if (updated == 0) {
             ContractCashCall current = findById(tenantId, contractId, id)
                     .orElseThrow(() -> new ResourceNotFoundException("Cash call", id));
